@@ -1,0 +1,7 @@
+pandas
+sentence-transformers
+chromadb
+spacy
+pytest
+pyarrow
+datasets
