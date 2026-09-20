@@ -1,7 +1,9 @@
-pandas
-sentence-transformers
-chromadb
-spacy
-pytest
-pyarrow
-datasets
+pandas==3.0.6
+sentence-transformers==6.1.0
+chromadb==1.5.9
+spacy==3.8.16
+langdetect==1.0.9
+pytest==9.1.1
+pyarrow==25.0.1
+datasets==5.0.1
+torch==2.14.0
