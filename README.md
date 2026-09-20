@@ -147,18 +147,3 @@ python scripts/validate_dataset.py
 ```
 
 The acquisition script obtains the AG News training data through the Hugging Face `datasets` library, writes the reproducible 5,000-document raw JSONL corpus, and skips acquisition when the valid output already exists. The preprocessing command then regenerates the ignored Parquet output.
-
-## Current Limitations / Future Weeks
-
-The completed Week 1 implementation does not include:
-
-- Text chunking
-- Embedding generation
-- ChromaDB indexing or other vector database work
-- Semantic retrieval
-- LLM response generation
-- RAG evaluation, including precision, recall, or hallucination detection
-- Topic modeling or sentiment analysis
-- FastAPI or another serving API
-
-These capabilities are outside the completed Week 1 scope.
