@@ -192,7 +192,3 @@ python -m pytest -q
 The acquisition script obtains the AG News training data through the Hugging Face `datasets` library, writes the reproducible 5,000-document raw JSONL corpus, and skips acquisition when the valid output already exists. The preprocessing command then regenerates the ignored Parquet output.
 
 Embedding-model files may be downloaded and cached by sentence-transformers during the first embedding or retrieval run. The dataset, generated Parquet files, persistent vector database, benchmark JSON, and local model cache files are not committed to Git.
-
-## Current Limitations
-
-The completed implementation stops at retrieval and latency benchmarking. It does not include an LLM, answer generation, a RAG generation pipeline, retrieval quality evaluation, or an API service such as FastAPI.
