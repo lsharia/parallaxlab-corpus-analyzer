@@ -16,8 +16,19 @@ env/
 # Local development metadata
 .vscode/
 
+# Local model and Hugging Face caches
+.cache/
+model_cache/
+hf_cache/
+
 # Dataset contents (keep directory markers tracked)
 data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+
+# Local persistent vector database
+data/vector_db/
+
+# Local retrieval benchmark outputs
+data/benchmarks/

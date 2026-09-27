@@ -1,38 +1,56 @@
-# Project Overview
+# RAG Knowledge Extractor
 
-This repository contains Week 1 of a RAG-powered knowledge extraction system. The overall goal is to acquire real-world text, clean and validate it, and prepare a reliable corpus for later retrieval-augmented generation work.
+This project builds a retrieval-augmented generation (RAG) knowledge extraction pipeline. The completed Week 1 and Week 2 work acquires and cleans a real-world text corpus, chunks documents, generates embeddings, stores vectors persistently, and retrieves semantically related chunks.
 
-## Week 1 Scope
+## Completed Scope
 
-Week 1 covers:
+Week 1 established the Python environment, environment checks, 5,000-document AG News acquisition, modular text cleaning, unit tests, and clean-dataset validation.
 
-- Python environment setup
-- Environment verification
-- Raw dataset acquisition
-- Modular text preprocessing
-- Unit testing
-- Clean dataset validation
+Week 2 implemented and tested:
+
+- Recursive text chunking
+- Sentence-transformer embedding generation and timing
+- Persistent ChromaDB ingestion
+- Semantic retrieval
+- Retrieval latency benchmarking
 
 ## Project Structure
 
 ```text
 RAG Knowledge Extractor Project/
 ├── data/
-│   ├── raw/             # Git-ignored source corpus
-│   └── processed/       # Git-ignored cleaned corpus
-├── src/                 # Reusable preprocessing modules
-├── tests/               # Fast pytest unit tests
-├── scripts/             # Environment, acquisition, and validation scripts
+│   ├── raw/                         # Ignored source corpus
+│   ├── processed/                   # Ignored generated Parquet datasets
+│   ├── vector_db/                   # Ignored persistent ChromaDB files
+│   └── benchmarks/                  # Ignored benchmark reports
+├── src/
+│   ├── chunking.py
+│   ├── embeddings.py
+│   ├── preprocessing.py
+│   ├── retrieval.py
+│   └── vector_store.py
+├── scripts/
+│   ├── benchmark_retrieval.py
+│   ├── download_data.py
+│   ├── validate_dataset.py
+│   └── verify_env.py
+├── tests/
+│   ├── test_benchmark_retrieval.py
+│   ├── test_chunking.py
+│   ├── test_embeddings.py
+│   ├── test_preprocessing.py
+│   ├── test_retrieval.py
+│   └── test_vector_store.py
 ├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
 
-`data/raw/` stores the acquired source documents. `data/processed/` stores generated clean datasets. Both dataset directories are Git-ignored so large data files are not committed. `src/` contains the preprocessing implementation, `tests/` contains its unit tests, and `scripts/` contains repeatable project utilities.
+The project dependencies are pinned in `requirements.txt`. Generated datasets, embeddings, ChromaDB database files, benchmark output, virtual environments, and local model caches are excluded from Git. Sentence-transformers may cache model files outside the repository in the user's Hugging Face cache directory.
 
 ## Environment Setup
 
-From the project root, create and activate a Python virtual environment, then install the listed dependencies:
+From the project root, create and activate a virtual environment and install the pinned dependencies:
 
 ```powershell
 python -m venv .venv
@@ -41,98 +59,120 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-On Windows Command Prompt, activate the same environment with:
+For Windows Command Prompt, activate with:
 
 ```bat
 .venv\Scripts\activate
 ```
 
-`requirements.txt` currently lists the required packages without pinned version numbers.
+## Week 1 Data Pipeline
 
-## Environment Verification
-
-Run the environment check from the project root:
-
-```powershell
-python scripts/verify_env.py
-```
-
-The script reports the Python version, checks whether PyTorch is installed, reports CUDA and GPU availability when present, and tests imports for pandas, sentence-transformers, ChromaDB, and spaCy. Missing required imports produce a non-zero exit code. CUDA or GPU absence is reported as informational because the project can run on CPU.
-
-## Dataset Acquisition
-
-The project uses the publicly accessible AG News dataset from Hugging Face (`fancyzhx/ag_news`). One AG News article is treated as one document. The acquisition script selected the first 5,000 records from the training split and preserved document ID, source, split, label, source identifier, title field, and raw text.
-
-Acquire or validate the raw corpus with:
+The raw corpus is AG News (`fancyzhx/ag_news`) from Hugging Face. One article is one document. Acquire 5,000 training records with:
 
 ```powershell
 python scripts/download_data.py
 ```
 
-The script writes UTF-8 JSON Lines data to:
+This creates `data/raw/ag_news_train_5000.jsonl`. The raw file is Git-ignored and can be reproduced with the acquisition script.
 
-```text
-data/raw/ag_news_train_5000.jsonl
-```
-
-It prints progress while downloading and reuses an existing valid output instead of downloading it again. Raw data is Git-ignored because datasets can be large and should be reproducibly acquired rather than stored in repository history.
-
-## Preprocessing
-
-The modular pipeline in `src/preprocessing.py` applies these deterministic stages in order:
-
-1. HTML stripping and character-reference decoding
-2. Unicode NFC normalization
-3. Excessive whitespace cleanup
-4. English-language filtering using `langdetect`
-
-Null and non-string text values are handled safely. Source metadata is preserved, while the `text` field is replaced with its cleaned value. Run the pipeline with:
+Run the cleaning pipeline and validate its Parquet output:
 
 ```powershell
 python src/preprocessing.py
-```
-
-## Output Dataset
-
-The pipeline writes the clean dataset to:
-
-```text
-data/processed/clean_corpus.parquet
-```
-
-Statistics from the actual Week 1 run:
-
-```text
-Raw documents: 5,000
-Cleaned documents: 4,998
-Removed documents: 2
-Empty documents removed: 0
-Language-filtered documents: 2
-Average text length before cleaning: 246.3 characters
-Average text length after cleaning: 244.8 characters
-```
-
-The separate validation command checks the generated file, schema, document IDs, empty text values, and basic text statistics:
-
-```powershell
 python scripts/validate_dataset.py
 ```
 
-The validated output contains 4,998 documents, seven columns, unique non-null document IDs, no empty text values, and text lengths ranging from 89 to 959 characters.
+The clean dataset is `data/processed/clean_corpus.parquet`. The validated corpus contains 4,998 documents; two documents were filtered for language, and no empty documents were removed.
 
-## Testing
+## Chunking
 
-Run the unit tests from the project root:
+`src/chunking.py` uses deterministic recursive splitting, preferring paragraph breaks, then line breaks, then spaces, and finally character boundaries. Defaults are 500 characters per chunk with 50 characters of overlap; both can be changed with `--chunk-size` and `--chunk-overlap`.
+
+Each chunk receives a stable ID based on its source document ID and sequential chunk number. `document_id` and `source` are carried into every chunk so it remains traceable to its source. Run chunking with:
 
 ```powershell
-pytest
+python src/chunking.py
 ```
 
-The 18 tests cover HTML stripping, Unicode normalization, whitespace cleanup, language filtering, null and non-string inputs, combined cleaning behavior, record filtering, metadata preservation, and Parquet schema output. Tests use small in-memory examples and do not download the full corpus.
+The result is `data/processed/chunks.parquet`, containing 5,053 chunks from 4,998 cleaned source documents.
 
-## Reproducibility
+## Embeddings
 
-From a clean clone, run the following commands from the project root:
+`src/embeddings.py` uses `sentence-transformers` with the default model `sentence-transformers/all-MiniLM-L6-v2`. Model name, batch size, and device are configurable through `--model`, `--batch-size`, and `--device` (`auto`, `cpu`, or `cuda`). Automatic device selection uses CUDA when available and otherwise falls back to CPU.
+
+Generate embeddings from the existing chunks with:
+
+```powershell
+python src/embeddings.py
+```
+
+This creates `data/processed/embeddings.parquet`, storing one vector per `chunk_id`. The actual Week 2 run generated 5,053 embeddings of dimension 384 with batch size 32 on CPU. Embedding took 56.76 seconds, with throughput of 89.03 chunks per second.
+
+## ChromaDB Vector Store
+
+`src/vector_store.py` loads the chunk text and the already-generated vectors, then inserts them in configurable batches. The persistent database is `data/vector_db/`; its collection is named `rag_chunks`. It stores 5,053 records with chunk text, the precomputed embedding, and `document_id`/`source` metadata. Repeat runs use existing records safely and do not create duplicate IDs.
+
+Create or extend the local collection with:
+
+```powershell
+python src/vector_store.py
+```
+
+The default batch size is 256. The database can be reopened by later project commands and is Git-ignored.
+
+## Semantic Retrieval
+
+`src/retrieval.py` embeds a natural-language query with the same default sentence-transformer model and searches the existing ChromaDB collection. `top_k` is configurable; the API returns `chunk_id`, `document_id`, `source`, chunk `text`, and ChromaDB `distance`. The distance is not a similarity percentage: a lower distance indicates a closer vector match.
+
+Run a query from the project root:
+
+```powershell
+python src/retrieval.py "oil prices and the stock market" --top-k 3
+```
+
+## Retrieval Benchmark
+
+Run the reproducible retrieval benchmark with:
+
+```powershell
+python scripts/benchmark_retrieval.py
+```
+
+The completed benchmark used 10 fixed topical queries, `top_k` values 1, 3, 5, and 10, and three repetitions per combination, for 120 measured runs. It initialized the model and database once before timing. Timed latency includes query embedding and ChromaDB vector search; it excludes model initialization and database setup. Results are written to the Git-ignored `data/benchmarks/retrieval_benchmark.json`.
+
+Measured results from that run:
+
+| Metric | Latency |
+|---|---:|
+| Overall average | 13.272 ms |
+| Overall median | 12.925 ms |
+| Overall minimum | 11.326 ms |
+| Overall maximum | 20.104 ms |
+| Average for `top_k=1` | 13.432 ms |
+| Average for `top_k=3` | 12.921 ms |
+| Average for `top_k=5` | 13.157 ms |
+| Average for `top_k=10` | 13.576 ms |
+
+## Tests and Verification
+
+Run the complete unit test suite:
+
+```powershell
+python -m pytest -q
+```
+
+The full suite currently contains 68 passing tests. Tests cover preprocessing, chunk boundaries and metadata, embedding interfaces and batch behavior, persistent vector-store ingestion, retrieval edge cases, and benchmark result aggregation. Tests use small local fixtures or fake vectors/models and do not re-download the corpus or run the full benchmark.
+
+Other checks:
+
+```powershell
+python scripts/verify_env.py
+python scripts/validate_dataset.py
+```
+
+## Reproducing Week 1 and Week 2 Artifacts
+
+From a clean clone, set up the environment and run the pipeline in order:
 
 ```powershell
 python -m venv .venv
@@ -142,8 +182,17 @@ python -m pip install -r requirements.txt
 python scripts/verify_env.py
 python scripts/download_data.py
 python src/preprocessing.py
-pytest
 python scripts/validate_dataset.py
+python src/chunking.py
+python src/embeddings.py
+python src/vector_store.py
+python -m pytest -q
 ```
 
 The acquisition script obtains the AG News training data through the Hugging Face `datasets` library, writes the reproducible 5,000-document raw JSONL corpus, and skips acquisition when the valid output already exists. The preprocessing command then regenerates the ignored Parquet output.
+
+Embedding-model files may be downloaded and cached by sentence-transformers during the first embedding or retrieval run. The dataset, generated Parquet files, persistent vector database, benchmark JSON, and local model cache files are not committed to Git.
+
+## Current Limitations
+
+The completed implementation stops at retrieval and latency benchmarking. It does not include an LLM, answer generation, a RAG generation pipeline, retrieval quality evaluation, or an API service such as FastAPI.
