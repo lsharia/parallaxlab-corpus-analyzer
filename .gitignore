@@ -12,6 +12,10 @@ env/
 # Local environment files
 .env
 .env.*
+!.env.example
+*.key
+*.pem
+secrets/
 
 # Local development metadata
 .vscode/
