@@ -164,7 +164,12 @@ def test_document_metadata_is_mapped_and_validated() -> None:
             "sentiment_label": "positive",
             "sentiment_score": 0.7,
         },
-        "doc-2": {"sentiment_label": "neutral", "sentiment_score": 0.0},
+        "doc-2": {
+            "topic_id": -1,
+            "topic_probability": 0.0,
+            "sentiment_label": "neutral",
+            "sentiment_score": 0.0,
+        },
     }
     assert available == {
         "topic_documents_available": 1,
@@ -246,6 +251,17 @@ def test_metadata_update_is_idempotent_and_preserves_existing_fields(tmp_path) -
     assert normalize(before["embeddings"]) == normalize(after_first["embeddings"])
     assert normalize(after_first["documents"]) == normalize(after_second["documents"])
     assert normalize(after_first["embeddings"]) == normalize(after_second["embeddings"])
+
+    unassigned = pd.DataFrame(
+        {"document_id": ["doc-1"], "topic_id": [-1], "topic_probability": [0.0]}
+    )
+    reassigned = update_collection_metadata(collection, topic_assignments=unassigned)
+    after_unassigning = collection.get(include=["metadatas"])
+    unassigned_by_id = dict(zip(after_unassigning["ids"], after_unassigning["metadatas"]))
+    assert reassigned["topic_chunks_covered"] == 0
+    assert reassigned["topic_documents_matched"] == 0
+    assert unassigned_by_id["chunk-1"]["topic_id"] == -1
+    assert unassigned_by_id["chunk-2"]["topic_id"] == -1
 
 
 def test_metadata_update_handles_missing_tables_and_rejects_bad_rows(tmp_path) -> None:

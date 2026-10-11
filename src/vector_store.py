@@ -102,8 +102,6 @@ def build_document_metadata(
                 raise ValueError(
                     f"Topic metadata for {document_id!r} has an invalid topic_probability"
                 )
-        if topic_id == -1:
-            continue
         fields: dict[str, Any] = {"topic_id": int(topic_id)}
         if "topic_probability" in row and row["topic_probability"] is not None:
             fields["topic_probability"] = float(row["topic_probability"])
@@ -185,7 +183,7 @@ def update_collection_metadata(
         additions = metadata_by_document.get(document_id, {})
         merged = dict(raw_metadata)
         merged.update(additions)
-        topic_chunks_covered += int("topic_id" in merged)
+        topic_chunks_covered += int(merged.get("topic_id", -1) >= 0)
         sentiment_chunks_covered += int("sentiment_label" in merged)
         if _metadata_matches(raw_metadata, merged):
             unchanged_chunks += 1
@@ -207,7 +205,7 @@ def update_collection_metadata(
     topic_document_ids = {
         document_id
         for document_id, fields in metadata_by_document.items()
-        if "topic_id" in fields
+        if fields.get("topic_id", -1) >= 0
     }
     sentiment_document_ids = {
         document_id
