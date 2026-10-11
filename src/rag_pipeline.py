@@ -21,7 +21,7 @@ from src.llm_client import (
     RequestTimeoutError,
 )
 from src.prompts import DEFAULT_MAX_CONTEXT_CHARS, build_rag_messages
-from src.retrieval import SemanticRetriever
+from src.retrieval import SemanticRetriever, build_metadata_filter
 
 
 DEFAULT_TOP_K = 5
@@ -78,12 +78,20 @@ class RAGPipeline:
         self.max_context_chars = max_context_chars
         self.max_retrieval_distance = float(max_retrieval_distance)
 
-    def answer_query(self, query: str, top_k: int = DEFAULT_TOP_K) -> RAGResult:
+    def answer_query(
+        self,
+        query: str,
+        top_k: int = DEFAULT_TOP_K,
+        *,
+        topic_id: int | None = None,
+        sentiment_label: str | None = None,
+    ) -> RAGResult:
         """Retrieve context and generate a grounded answer for ``query``."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be a non-empty string")
         if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
             raise ValueError("top_k must be a positive integer")
+        build_metadata_filter(topic_id, sentiment_label)
 
         normalized_query = query.strip()
         total_started = time.perf_counter()
@@ -91,7 +99,17 @@ class RAGPipeline:
         try:
             if self.retriever is None:
                 self.retriever = SemanticRetriever()
-            retrieved_chunks = self.retriever.retrieve(normalized_query, top_k=top_k)
+            if topic_id is None and sentiment_label is None:
+                retrieved_chunks = self.retriever.retrieve(
+                    normalized_query, top_k=top_k
+                )
+            else:
+                retrieved_chunks = self.retriever.retrieve(
+                    normalized_query,
+                    top_k=top_k,
+                    topic_id=topic_id,
+                    sentiment_label=sentiment_label,
+                )
             if not isinstance(retrieved_chunks, Sequence) or isinstance(
                 retrieved_chunks, (str, bytes)
             ):

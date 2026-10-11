@@ -26,9 +26,20 @@ class FakeRetriever:
         self.chunks = [] if chunks is None else chunks
         self.error = error
         self.calls: list[tuple[str, int]] = []
+        self.filter_calls: list[dict[str, Any]] = []
 
-    def retrieve(self, query: str, top_k: int) -> Any:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        topic_id: int | None = None,
+        sentiment_label: str | None = None,
+    ) -> Any:
         self.calls.append((query, top_k))
+        if topic_id is not None or sentiment_label is not None:
+            self.filter_calls.append(
+                {"topic_id": topic_id, "sentiment_label": sentiment_label}
+            )
         if self.error is not None:
             raise self.error
         return self.chunks
@@ -105,6 +116,38 @@ def test_successful_end_to_end_pipeline_preserves_sources_and_latencies() -> Non
     assert result.retrieval_latency_seconds >= 0
     assert result.generation_latency_seconds >= 0
     assert result.total_latency_seconds >= 0
+
+
+def test_rag_pipeline_passes_optional_metadata_filters() -> None:
+    pipeline, retriever, _ = make_pipeline(
+        chunks=[
+            {
+                "chunk_id": "chunk-1",
+                "document_id": "doc-1",
+                "source": "news",
+                "text": "Filtered context.",
+                "distance": 0.1,
+            }
+        ]
+    )
+
+    result = pipeline.answer_query(
+        "question", topic_id=3, sentiment_label="positive"
+    )
+
+    assert result.answer == "Generated answer."
+    assert retriever.filter_calls == [
+        {"topic_id": 3, "sentiment_label": "positive"}
+    ]
+
+
+def test_rag_pipeline_rejects_invalid_metadata_filters_before_retrieval() -> None:
+    pipeline, retriever, _ = make_pipeline()
+
+    with pytest.raises(ValueError, match="topic_id must be a non-negative integer"):
+        pipeline.answer_query("question", topic_id=-1)
+
+    assert retriever.calls == []
 
 
 def test_empty_retrieval_returns_insufficient_information_without_llm_call() -> None:

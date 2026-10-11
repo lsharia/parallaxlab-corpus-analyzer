@@ -1,28 +1,21 @@
 # RAG Knowledge Extractor
 
-This project builds a retrieval-augmented generation (RAG) knowledge extraction pipeline. The completed Week 1 and Week 2 work acquires and cleans a real-world text corpus, chunks documents, generates embeddings, stores vectors persistently, and retrieves semantically related chunks.
+## Project Overview, Completed Scope, and Structure
 
-## Completed Scope
+This project builds a retrieval-augmented generation (RAG) knowledge extraction pipeline over the AG News corpus. Work progressed from environment setup and corpus preparation in Week 1, through chunking, embeddings, and semantic retrieval in Week 2, LLM-backed grounded answers in Week 3, and NLP metadata and filtered retrieval in Week 4.
 
-Week 1 established the Python environment, environment checks, 5,000-document AG News acquisition, modular text cleaning, unit tests, and clean-dataset validation.
+Week 1 established the Python environment, 5,000-document AG News acquisition, modular text cleaning, tests, and clean-dataset validation. Week 2 added recursive chunking, sentence-transformer embeddings, persistent ChromaDB ingestion, semantic retrieval, and retrieval latency benchmarking. Week 3 added DeepSeek integration, prompt engineering, RAG orchestration, safe error handling, relevance filtering, and an end-to-end benchmark. Week 4 added LDA topic modeling, VADER sentiment analysis and manual evaluation, ChromaDB metadata enrichment, optional topic/sentiment filters, and NLP validation.
 
-Week 2 implemented and tested:
-
-- Recursive text chunking
-- Sentence-transformer embedding generation and timing
-- Persistent ChromaDB ingestion
-- Semantic retrieval
-- Retrieval latency benchmarking
-
-## Project Structure
+The current artifacts contain 4,998 cleaned documents, 5,053 chunks, 5,053 embeddings of dimension 384, and 5,053 records in the `rag_chunks` collection. NLP outputs are heuristics: several LDA topics are mixed or difficult to interpret, and VADER has low neutral recall.
 
 ```text
 RAG Knowledge Extractor Project/
 ├── data/
-│   ├── raw/                         # Ignored source corpus
-│   ├── processed/                   # Ignored generated Parquet datasets
-│   ├── vector_db/                   # Ignored persistent ChromaDB files
-│   └── benchmarks/                  # Ignored benchmark reports
+│   ├── labels/manual_sentiment_labels.csv  # Version-controlled manual labels
+│   ├── raw/                                # Ignored source corpus
+│   ├── processed/                          # Ignored generated Parquet files
+│   ├── vector_db/                          # Ignored persistent ChromaDB files
+│   └── benchmarks/                         # Ignored generated reports
 ├── src/
 │   ├── chunking.py
 │   ├── embeddings.py
@@ -31,12 +24,16 @@ RAG Knowledge Extractor Project/
 │   ├── prompts.py
 │   ├── rag_pipeline.py
 │   ├── retrieval.py
+│   ├── sentiment_analysis.py
+│   ├── topic_modeling.py
 │   └── vector_store.py
 ├── scripts/
 │   ├── benchmark_rag.py
 │   ├── benchmark_retrieval.py
 │   ├── download_data.py
+│   ├── enrich_chroma_metadata.py
 │   ├── validate_dataset.py
+│   ├── validate_nlp_metadata.py
 │   └── verify_env.py
 ├── tests/
 │   ├── test_benchmark_rag.py
@@ -44,10 +41,13 @@ RAG Knowledge Extractor Project/
 │   ├── test_chunking.py
 │   ├── test_embeddings.py
 │   ├── test_llm_client.py
+│   ├── test_nlp_metadata_validation.py
 │   ├── test_preprocessing.py
 │   ├── test_prompts.py
 │   ├── test_rag_pipeline.py
 │   ├── test_retrieval.py
+│   ├── test_sentiment_analysis.py
+│   ├── test_topic_modeling.py
 │   └── test_vector_store.py
 ├── .env.example
 ├── .gitignore
@@ -55,11 +55,11 @@ RAG Knowledge Extractor Project/
 └── README.md
 ```
 
-The project dependencies are pinned in `requirements.txt`. Generated datasets, embeddings, ChromaDB database files, benchmark output, virtual environments, and local model caches are excluded from Git. Sentence-transformers may cache model files outside the repository in the user's Hugging Face cache directory.
+Dependencies are pinned in `requirements.txt`. Generated datasets, embeddings, ChromaDB files, benchmark output, virtual environments, and local model caches are Git-ignored. Sentence-transformers may cache model files outside the repository in the user's Hugging Face cache directory.
 
-## Environment Setup
+## Environment Setup and Configuration
 
-From the project root, create and activate a virtual environment and install the pinned dependencies:
+From the project root, create and activate a virtual environment and install dependencies:
 
 ```powershell
 python -m venv .venv
@@ -74,82 +74,90 @@ For Windows Command Prompt, activate with:
 .venv\Scripts\activate
 ```
 
-## Week 1 Data Pipeline
+The Week 3 DeepSeek client reads configuration from process environment variables or the project-root `.env` file. `.env.example` contains placeholders only. A valid `DEEPSEEK_API_KEY` is required for live generation and the real RAG benchmark, but is not required for unit tests, topic modeling, sentiment analysis, metadata enrichment, or retrieval-only commands.
 
-The raw corpus is AG News (`fancyzhx/ag_news`) from Hugging Face. One article is one document. Acquire 5,000 training records with:
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | Required for API calls | API credential |
+| `DEEPSEEK_MODEL` | `deepseek-chat` | Model name |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL |
+| `DEEPSEEK_TIMEOUT` | `30` | Request timeout in seconds |
+| `DEEPSEEK_MAX_OUTPUT_TOKENS` | `1024` | Maximum generated tokens |
+
+To create the ignored local configuration file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Set `DEEPSEEK_API_KEY` in `.env` and optionally adjust other values. Process environment values take precedence. Never commit or paste real credentials into source, tests, documentation, or generated reports.
+
+## Week 1 - Environment, Data Ingestion, and Preprocessing
+
+The raw corpus is AG News (`fancyzhx/ag_news`) from Hugging Face, with one article per document. Acquire 5,000 training records:
 
 ```powershell
 python scripts/download_data.py
 ```
 
-This creates `data/raw/ag_news_train_5000.jsonl`. The raw file is Git-ignored and can be reproduced with the acquisition script.
+This creates Git-ignored `data/raw/ag_news_train_5000.jsonl`. The acquisition script skips downloading when a valid output already exists.
 
-Run the cleaning pipeline and validate its Parquet output:
+Clean and validate the dataset:
 
 ```powershell
 python src/preprocessing.py
 python scripts/validate_dataset.py
 ```
 
-The clean dataset is `data/processed/clean_corpus.parquet`. The validated corpus contains 4,998 documents; two documents were filtered for language, and no empty documents were removed.
+The clean dataset is `data/processed/clean_corpus.parquet`, with `document_id`, source metadata, and cleaned `text`. The validated corpus contains 4,998 documents; two were filtered for language, and no empty documents were removed. The cleaner removes HTML, normalizes Unicode, and collapses whitespace without changing the raw source file.
 
-## Chunking
+## Week 2 - Chunking, Embeddings, ChromaDB, Semantic Retrieval, and Benchmark
 
-`src/chunking.py` uses deterministic recursive splitting, preferring paragraph breaks, then line breaks, then spaces, and finally character boundaries. Defaults are 500 characters per chunk with 50 characters of overlap; both can be changed with `--chunk-size` and `--chunk-overlap`.
+### Chunking
 
-Each chunk receives a stable ID based on its source document ID and sequential chunk number. `document_id` and `source` are carried into every chunk so it remains traceable to its source. Run chunking with:
+`src/chunking.py` uses deterministic recursive splitting, preferring paragraph breaks, line breaks, spaces, and finally character boundaries. Defaults are 500 characters per chunk with 50 characters of overlap; configure them with `--chunk-size` and `--chunk-overlap`.
 
 ```powershell
 python src/chunking.py
 ```
 
-The result is `data/processed/chunks.parquet`, containing 5,053 chunks from 4,998 cleaned source documents.
+The Git-ignored `data/processed/chunks.parquet` contains 5,053 chunks from 4,998 documents. Chunk IDs are stable and each chunk preserves its `document_id` and `source`.
 
-## Embeddings
+### Embeddings
 
-`src/embeddings.py` uses `sentence-transformers` with the default model `sentence-transformers/all-MiniLM-L6-v2`. Model name, batch size, and device are configurable through `--model`, `--batch-size`, and `--device` (`auto`, `cpu`, or `cuda`). Automatic device selection uses CUDA when available and otherwise falls back to CPU.
-
-Generate embeddings from the existing chunks with:
+`src/embeddings.py` uses `sentence-transformers/all-MiniLM-L6-v2` by default. Model, batch size, and device (`auto`, `cpu`, or `cuda`) are configurable with `--model`, `--batch-size`, and `--device`.
 
 ```powershell
 python src/embeddings.py
 ```
 
-This creates `data/processed/embeddings.parquet`, storing one vector per `chunk_id`. The actual Week 2 run generated 5,053 embeddings of dimension 384 with batch size 32 on CPU. Embedding took 56.76 seconds, with throughput of 89.03 chunks per second.
+The output `data/processed/embeddings.parquet` maps `chunk_id` to an embedding vector. The measured Week 2 run generated 5,053 vectors of dimension 384 using batch size 32 on CPU in 56.76 seconds, at 89.03 chunks per second.
 
-## ChromaDB Vector Store
+### ChromaDB
 
-`src/vector_store.py` loads the chunk text and the already-generated vectors, then inserts them in configurable batches. The persistent database is `data/vector_db/`; its collection is named `rag_chunks`. It stores 5,053 records with chunk text, the precomputed embedding, and `document_id`/`source` metadata. Repeat runs use existing records safely and do not create duplicate IDs.
-
-Create or extend the local collection with:
+`src/vector_store.py` stores chunk text and precomputed vectors in the persistent, Git-ignored `data/vector_db/` database, in collection `rag_chunks`. The collection contains 5,053 records with chunk text, embeddings, and `document_id`/`source` metadata. Batches default to 256; repeat ingestion does not duplicate existing IDs.
 
 ```powershell
 python src/vector_store.py
 ```
 
-The default batch size is 256. The database can be reopened by later project commands and is Git-ignored.
+### Semantic Retrieval
 
-## Semantic Retrieval
-
-`src/retrieval.py` embeds a natural-language query with the same default sentence-transformer model and searches the existing ChromaDB collection. `top_k` is configurable; the API returns `chunk_id`, `document_id`, `source`, chunk `text`, and ChromaDB `distance`. The distance is not a similarity percentage: a lower distance indicates a closer vector match.
-
-Run a query from the project root:
+`src/retrieval.py` embeds a natural-language query with the same sentence-transformer model and searches the existing collection. `top_k` controls the maximum results. Each result contains `chunk_id`, `document_id`, `source`, `text`, and ChromaDB `distance`; a lower distance means a closer vector match, not a similarity percentage.
 
 ```powershell
 python src/retrieval.py "oil prices and the stock market" --top-k 3
 ```
 
-## Retrieval Benchmark
+### Retrieval Benchmark
 
-Run the reproducible retrieval benchmark with:
+Run the retrieval-only benchmark:
 
 ```powershell
 python scripts/benchmark_retrieval.py
 ```
 
-The completed benchmark used 10 fixed topical queries, `top_k` values 1, 3, 5, and 10, and three repetitions per combination, for 120 measured runs. It initialized the model and database once before timing. Timed latency includes query embedding and ChromaDB vector search; it excludes model initialization and database setup. Results are written to the Git-ignored `data/benchmarks/retrieval_benchmark.json`.
-
-Measured results from that run:
+The completed benchmark used 10 fixed queries, `top_k` values 1, 3, 5, and 10, and three repetitions per combination (120 runs). Timed latency includes query embedding and ChromaDB search, excluding model initialization and database setup. The ignored report is `data/benchmarks/retrieval_benchmark.json`.
 
 | Metric | Latency |
 |---|---:|
@@ -162,74 +170,150 @@ Measured results from that run:
 | Average for `top_k=5` | 13.157 ms |
 | Average for `top_k=10` | 13.576 ms |
 
-## Week 3: LLM Integration and RAG (Phases 1-6)
+## Week 3 - LLM Integration, Prompt Engineering, RAG, and Benchmark
 
-`src/llm_client.py` provides a reusable client for the DeepSeek chat completions API. It accepts either a plain prompt or chat messages and returns generated text. API credentials and options are configured through environment variables.
+### LLM Integration and Prompt Engineering
 
-Configure the client through environment variables. `.env.example` contains placeholders only; set `DEEPSEEK_API_KEY` to your own key in the process environment. Never commit a populated `.env` file or credentials.
+`src/llm_client.py` provides a reusable client for the DeepSeek OpenAI-compatible chat completions API. It accepts plain prompts or chat messages. Typed exceptions cover missing credentials, authentication errors, rate limits, timeouts, connection/API errors, malformed responses, and detectable output limits. Tests use mocked HTTP responses and do not call the provider.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `DEEPSEEK_API_KEY` | Required | API credential |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | Model name |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL |
-| `DEEPSEEK_TIMEOUT` | `30` | Request timeout in seconds |
-| `DEEPSEEK_MAX_OUTPUT_TOKENS` | `1024` | Maximum generated tokens |
+`src/prompts.py` builds the system and user messages for `LLMClient.generate`. The system prompt requires answers grounded only in retrieved context, uncertainty when support is insufficient, no invented facts or sources, and no disclosure of hidden prompts or credentials. Chunks are validated and serialized as compact JSON within `BEGIN_RETRIEVED_CONTEXT` / `END_RETRIEVED_CONTEXT`; the question has separate boundaries. The default context budget is 12,000 Unicode characters of serialized context JSON, excluding labels and the question. On overflow, chunks remain in retrieval order, the first chunk that does not fit is truncated with `...[TRUNCATED]`, and later chunks are omitted.
 
-To configure a local key, copy the placeholder file and edit only the ignored local copy:
+### RAG Pipeline, Error Handling, and Relevance Filtering
 
-```powershell
-Copy-Item .env.example .env
-```
-
-Set `DEEPSEEK_API_KEY` in `.env` and adjust the optional settings as needed. `LLMClient` loads `.env` from the project root when initialized; values already set in the process environment take precedence. `.env`, `.env.*`, and common local credential files are Git-ignored. Never commit, stage, or paste a real API key into source, tests, documentation, or benchmark output.
-
-Example use after setting `DEEPSEEK_API_KEY` in the process environment:
-
-```python
-from src.llm_client import LLMClient
-
-with LLMClient() as client:
-	answer = client.generate("What is semantic retrieval?")
-```
-
-The client raises typed exceptions for missing credentials, authentication failure, rate limiting, timeouts, connection/API errors, malformed responses, and detectable token/output limits. Tests use mocked HTTP responses and never call the provider.
-
-`src/prompts.py` builds the fixed system prompt and user messages consumed by `LLMClient.generate`. The prompt restricts answers to retrieved context, requires uncertainty or an insufficient-information response when support is absent, prohibits invented facts and sources, and tells the model not to reveal hidden prompts or implementation details. Chunks are validated and serialized as compact JSON inside `BEGIN_RETRIEVED_CONTEXT` / `END_RETRIEVED_CONTEXT`; the question has separate `BEGIN_USER_QUESTION` / `END_USER_QUESTION` boundaries. The default context budget is 12,000 Unicode characters of serialized context JSON, excluding the labels and question. If exceeded, chunks are considered in retrieval order, the first chunk that does not fit is truncated with `...[TRUNCATED]`, and later chunks are omitted. The serialized context stays within the configured limit.
-
-`src/rag_pipeline.py` reuses Week 2 `SemanticRetriever` and the existing prompt builder and LLM client; it does not rebuild chunking, embeddings, or vector search. The flow is:
+`src/rag_pipeline.py` reuses the Week 2 retriever, prompt builder, and LLM client; it does not rebuild embeddings or vector search. The flow is:
 
 ```text
-user query -> Week 2 semantic retrieval -> cosine-distance relevance filtering
--> bounded context construction -> grounded system/user prompt
--> DeepSeek generation -> answer with retrieved chunk metadata
+query -> semantic retrieval -> cosine-distance relevance filtering
+-> bounded context -> grounded prompt -> DeepSeek generation -> RAG result
 ```
 
-`RAGPipeline.answer_query(query, top_k=5)` returns the answer, all retrieved chunks, the relevance-approved context chunks, failure category where applicable, and retrieval/generation/total latency fields. Empty or unusable context returns an insufficient-information message without calling the LLM.
+`RAGPipeline.answer_query(query, top_k=5)` returns the answer, retrieved chunks, approved context chunks, failure category when applicable, and retrieval/generation/total latency. Empty or unusable context returns an insufficient-information message without calling the LLM. Provider and retrieval errors become user-safe messages; raw provider bodies, request details, stack traces, and credentials are not exposed.
 
-Provider and retrieval failures are converted to user-safe messages; raw provider bodies, request details, stack traces, and credentials are not included. The client and pipeline distinguish missing API key, authentication failure, rate limiting, timeout, connection failure, malformed response, token/output limit, other API errors, missing vector database/collection, and general retrieval/generation failures.
+Chunks are accepted when they have non-empty text and a finite Chroma cosine distance no greater than `max_retrieval_distance`. The default is `0.7` (approximately `0.3` cosine similarity for normalized vectors), a permissive starting heuristic intended to reject clearly weak matches while retaining recall. It is not a domain-membership guarantee or a guarantee against hallucination.
 
-The pipeline accepts chunks only when they contain non-empty text and a finite Chroma cosine distance no greater than `max_retrieval_distance`, configurable on `RAGPipeline`. The default is `0.7` (cosine similarity of approximately `0.3` for normalized vectors), a permissive starting cutoff intended to reject clearly weak matches while retaining recall. Tune it against representative in-domain and out-of-domain queries for the corpus. This distance threshold is a retrieval-relevance heuristic, NOT a guarantee of domain membership or hallucination prevention; answers still rely on retrieved evidence and model compliance with the grounding prompt.
+### End-to-End RAG Benchmark
 
-## End-to-End RAG Benchmark
-
-Run the existing retrieval-to-answer pipeline with five fixed AG News-oriented queries and three repetitions by default:
+The benchmark runs five fixed AG News-oriented queries with three repetitions by default (15 runs):
 
 ```powershell
 python scripts/benchmark_rag.py --repetitions 3 --top-k 5
 ```
 
-The default run uses five fixed corpus-related queries and three repetitions (15 runs). It records per-run retrieval latency, generation latency, their sum as total latency, `top_k`, whether generation completed, and a safe error category. It reports average and median retrieval/generation/total latency plus minimum and maximum total latency. The embedding model, vector database, and LLM client are initialized before timed runs. Per-run results and summaries are saved to the Git-ignored `data/benchmarks/rag_benchmark.json`; individual failures do not stop later runs. Running the benchmark requires `DEEPSEEK_API_KEY` and makes provider API requests. No real Week 3 RAG benchmark result has been generated in this workspace; do not infer results from the separate Week 2 retrieval benchmark.
+It records per-run retrieval, generation, and total latency, `top_k`, whether generation completed, and a safe error category; summaries include average/median retrieval, generation, and total latency and minimum/maximum total latency. The ignored report is `data/benchmarks/rag_benchmark.json`. **A valid `DEEPSEEK_API_KEY` is required**, and running the benchmark makes provider API requests. No live DeepSeek API smoke test or real RAG benchmark has been completed; no result is inferred from the retrieval-only benchmark.
 
-## Tests and Verification
+## Week 4 - NLP Analysis and Filtered Retrieval
 
-Run the complete unit test suite:
+### LDA Topic Modeling
+
+`src/topic_modeling.py` fits scikit-learn batch Latent Dirichlet Allocation on the cleaned corpus `text` column. `CountVectorizer` removes English and common news boilerplate stop words, excludes one-character and numeric-only tokens, and caps vocabulary size. The source corpus is read-only. The default is 10 topics with fixed random seed 42; configure `--n-topics`, `--random-state`, `--max-iter`, `--max-features`, and `--top-words`.
+
+```powershell
+python src/topic_modeling.py
+python src/topic_modeling.py --n-topics 12 --random-state 42 --max-iter 10 --top-words 10
+```
+
+Outputs under Git-ignored `data/processed/`:
+
+| File | Schema | Description |
+|---|---|---|
+| `topic_assignments.parquet` | `document_id` (string), `topic_id` (integer), `topic_probability` (float) | One row per document; probability is the assigned topic's fitted probability. Topic `-1` and probability `0.0` indicate no usable terms. |
+| `topic_summary.parquet` | `topic_id` (integer), `top_words` (string) | Representative high-weight words for each topic. |
+| `topic_model_manifest.json` | `version`, `vectorizer_version`, `corpus_sha256`, `config`, `document_count` | Cache identity; matching valid outputs are reused unless `--force` is specified. |
+
+If fewer documents have usable terms than requested topics, the topic count is reduced to that document count. If none have usable terms, all assignments are unassigned and the summary is empty.
+
+### Sentiment Analysis and Manual Evaluation
+
+`src/sentiment_analysis.py` uses the local VADER lexicon from pinned `vaderSentiment==3.3.2`; it uses no paid API and downloads no model at runtime. The compound score ranges from -1 to 1. Scores at or above `0.05` are positive; scores at or below `-0.05` are negative; values between them are neutral.
+
+```powershell
+python src/sentiment_analysis.py
+```
+
+The output `data/processed/sentiment_scores.parquet` has `document_id`, `sentiment_label` (`positive`, `neutral`, or `negative`), and `sentiment_score`. Missing or empty text is neutral with score `0.0`; short text is scored normally. The command also writes `data/benchmarks/sentiment_evaluation.json`.
+
+The version-controlled `data/labels/manual_sentiment_labels.csv` contains 60 manually assigned labels from the clean corpus, balanced at 20 per class. Labels were assigned by reviewing articles independently of VADER predictions. Positive means the central outcome is beneficial, successful, or an achievement; negative means harmful, a loss, failure, or setback; neutral means factual, mixed, or without clear overall polarity. Topic/category alone is not sentiment. This curated set is not a random sample and does not estimate corpus-wide performance.
+
+Measured with VADER 3.3.2 and the thresholds above:
+
+| Class | Precision | Recall | F1 | Support |
+|---|---:|---:|---:|---:|
+| Negative | 0.615 | 0.800 | 0.696 | 20 |
+| Neutral | 0.500 | 0.050 | 0.091 | 20 |
+| Positive | 0.531 | 0.850 | 0.654 | 20 |
+
+Accuracy is **0.567**. Confusion matrix rows are true labels and columns are predicted labels, ordered negative, neutral, positive: `[[16, 0, 4], [8, 1, 11], [2, 1, 17]]`. VADER is a general-purpose lexicon method; it can miss jargon, entity context, sarcasm, and mixed outcomes. Its score is not a calibrated probability, and its measured neutral recall is low.
+
+### ChromaDB Metadata Enrichment
+
+After topic and sentiment outputs exist, enrich the existing `rag_chunks` collection:
+
+```powershell
+python scripts/enrich_chroma_metadata.py
+```
+
+The script joins document-level outputs to chunks by `document_id` and attaches scalar `topic_id`, `topic_probability`, `sentiment_label`, and `sentiment_score` where available. Topic ID `-1` is unassigned. Metadata-only `collection.update` preserves chunk IDs, text, embeddings, `document_id`, `source`, and other existing metadata; embeddings are not regenerated.
+
+Missing metadata files or document rows are skipped and reported; unmatched document IDs are counted. Duplicate IDs and invalid schemas or scalar values stop the update. Repeating with unchanged metadata is idempotent. The ignored coverage report is `data/benchmarks/chroma_metadata_enrichment.json`. The validated collection has 5,053 records, with metadata mapped from 4,998 documents.
+
+### Filtered Semantic Retrieval
+
+`src/retrieval.py` supports optional `topic_id` and `sentiment_label` equality filters independently or together. Combined filters use AND. Missing metadata does not match; no matching records returns an empty list. Omitting both filters preserves unfiltered behavior. The result schema, cosine-distance semantics, and `top_k` behavior are unchanged.
+
+```powershell
+# Unfiltered
+python src/retrieval.py "oil prices and the stock market" --top-k 3
+
+# Topic only, sentiment only, or both
+python src/retrieval.py "oil prices and the stock market" --top-k 3 --topic-id 4
+python src/retrieval.py "oil prices and the stock market" --sentiment-label negative
+python src/retrieval.py "oil prices and the stock market" --topic-id 4 --sentiment-label negative
+```
+
+The Python API accepts the same optional arguments, for example `RAGPipeline.answer_query(query, top_k=5, topic_id=4, sentiment_label="negative")`. Existing callers need not pass filters. Filter support has been validated, but no improvement in relevance has been established.
+
+### NLP Validation and Measured Results
+
+Reproduce topic review evidence, sentiment edge probes and evaluation, and live filter-conformance checks with:
+
+```powershell
+python scripts/validate_nlp_metadata.py
+```
+
+The command writes Git-ignored `data/benchmarks/nlp_metadata_validation.json`. It records the top words and three highest-probability documents per topic, manual topic assessments, edge-case sentiment results, a fresh manual-label evaluation, and four retrieval checks against `rag_chunks`. It uses the existing sentence-transformer and stored vectors; it does not regenerate document embeddings. Checks establish filter conformance, not improved relevance or answer quality.
+
+Manual review of topic top words and three representative documents per topic found:
+
+| Topic | Assessment | Observation |
+|---:|---|---|
+| 0 | Mixed | Political terms, but representatives include baseball and archaeology. |
+| 1 | Mixed | Windows/security cluster with a political-news outlier. |
+| 2 | Difficult | Music, trials, batteries, and sports words span unrelated representatives. |
+| 3 | Mixed | Iraq/Najaf stories, while Olympic terms also enter the topic. |
+| 4 | Difficult | Oil/stock words do not consistently fit sampled arts, currency, and city articles. |
+| 5 | Mixed | Earnings terms fit some examples, but a celebrity wedding is also prominent. |
+| 6 | Difficult | Hurricane words conflict with representative baseball, climate, and soccer articles. |
+| 7 | Mixed | Broad company/court/event terms span drug-import policy and aircraft trade. |
+| 8 | Coherent | Broad technology/business cluster around Google, IPOs, search, and stocks. |
+| 9 | Coherent | Space/science cluster includes China spaceflight and a Japanese lunar probe, with a software outlier. |
+
+These are qualitative observations, not formal coherence scores. Several topics remain mixed or difficult to interpret.
+
+Current sentiment probes returned `Win!` as positive (`0.6239`); empty and missing text as neutral (`0.0`); technical API/OAuth jargon as neutral (`0.0`); an opposing Microsoft-loss/Apple-profit example as positive (`0.6486`); and a factual committee sentence as neutral (`0.0`). The named-entity example illustrates that compound sentiment can obscure which entity or claim carries the polarity.
+
+On the live collection, unfiltered, topic-only (`topic_id=9`), sentiment-only (`negative`), and combined (`topic_id=8`, `positive`) retrieval each returned five results at `top_k=5`; every result satisfied its requested filter. These observations are conformance checks only, not evidence of better relevance.
+
+## Testing, Final Verification, Reproduction, and Known Limitations
+
+### Tests and Final Verification
+
+Run the test suite:
 
 ```powershell
 python -m pytest -q
 ```
 
-The full suite covers preprocessing, chunk boundaries and metadata, embedding interfaces and batch behavior, persistent vector-store ingestion, retrieval edge cases, retrieval and RAG benchmark aggregation, and mocked LLM API behavior. Tests use small local fixtures or fake vectors/models and do not re-download the corpus, call the LLM provider, or run either benchmark.
+The suite covers preprocessing, chunking, embeddings, vector-store ingestion and metadata preservation, retrieval filters, topic modeling, sentiment scoring/evaluation, NLP validation, benchmarks, and mocked LLM behavior. Tests use local fixtures or fake models and do not download the corpus, call DeepSeek, or run benchmarks. The last recorded full-suite validation passed **188 tests**.
 
 Other checks:
 
@@ -238,9 +322,11 @@ python scripts/verify_env.py
 python scripts/validate_dataset.py
 ```
 
-## Reproducing Week 1 and Week 2 Artifacts
+The validated artifacts contain 4,998 clean documents, 5,053 chunks, 5,053 embeddings of dimension 384, and 5,053 `rag_chunks` records. Generated datasets, vector-store files, and benchmark reports are Git-ignored.
 
-From a clean clone, set up the environment and run the pipeline in order:
+### Full Pipeline Reproduction
+
+Required local pipeline steps, in dependency order, from a clean clone:
 
 ```powershell
 python -m venv .venv
@@ -254,9 +340,27 @@ python scripts/validate_dataset.py
 python src/chunking.py
 python src/embeddings.py
 python src/vector_store.py
+python src/topic_modeling.py
+python src/sentiment_analysis.py
+python scripts/enrich_chroma_metadata.py
+python scripts/validate_nlp_metadata.py
 python -m pytest -q
 ```
 
-The acquisition script obtains the AG News training data through the Hugging Face `datasets` library, writes the reproducible 5,000-document raw JSONL corpus, and skips acquisition when the valid output already exists. The preprocessing command then regenerates the ignored Parquet output.
+The first embedding or retrieval run may download and cache the sentence-transformer model. Dataset, Parquet, ChromaDB, and benchmark artifacts are local generated files and are not committed. The manual sentiment labels are version-controlled and refer to document IDs from the acquired clean corpus.
 
-Embedding-model files may be downloaded and cached by sentence-transformers during the first embedding or retrieval run. The dataset, generated Parquet files, persistent vector database, benchmark JSON files, and local model cache files are not committed to Git.
+Optional checks and benchmarks:
+
+```powershell
+python scripts/benchmark_retrieval.py
+python scripts/benchmark_rag.py --repetitions 3 --top-k 5
+```
+
+The retrieval-only benchmark needs the corpus, vectors, model, and Chroma collection. The RAG benchmark additionally requires a valid `DEEPSEEK_API_KEY` and makes provider API requests. It has not been run against the live API in this workspace.
+
+### Known Limitations
+
+- LDA topics are partly mixed or difficult to interpret; the topic assessments are qualitative, not formal coherence scores.
+- VADER's 60-example evaluation is curated rather than randomly sampled, so its results are not an unbiased estimate of corpus-wide performance; neutral recall is low on this set.
+- Sentiment scores are not calibrated confidence, and lexical scoring can mishandle jargon, named entities, sarcasm, and mixed outcomes.
+- Metadata filters were checked for conformance on the existing collection; filtered retrieval has not been shown to improve relevance or answer quality.

@@ -46,9 +46,24 @@ def make_store(database_path: Path) -> None:
         ],
         embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.9, 0.1, 0.0]],
         metadatas=[
-            {"document_id": "doc-cat", "source": "test"},
-            {"document_id": "doc-dog", "source": "test"},
-            {"document_id": "doc-kitten", "source": "test"},
+            {
+                "document_id": "doc-cat",
+                "source": "test",
+                "topic_id": 2,
+                "sentiment_label": "positive",
+            },
+            {
+                "document_id": "doc-dog",
+                "source": "test",
+                "topic_id": 1,
+                "sentiment_label": "negative",
+            },
+            {
+                "document_id": "doc-kitten",
+                "source": "test",
+                "topic_id": 2,
+                "sentiment_label": "neutral",
+            },
         ],
     )
 
@@ -148,6 +163,103 @@ def test_deterministic_order_and_query_embedding_interface(tmp_path) -> None:
         "show_progress_bar": False,
     }
     assert model.calls[1] == model.calls[0]
+
+
+def test_topic_only_filter_returns_only_matching_topic(tmp_path) -> None:
+    database_path = tmp_path / "chroma"
+    make_store(database_path)
+    retriever = SemanticRetriever(
+        database_path=database_path,
+        model=FakeQueryModel({"animals": [1.0, 0.0, 0.0]}),
+    )
+
+    results = retriever.retrieve("animals", top_k=3, topic_id=2)
+
+    assert {item["chunk_id"] for item in results} == {"cat-1", "cat-2"}
+
+
+def test_sentiment_only_filter_returns_only_matching_sentiment(tmp_path) -> None:
+    database_path = tmp_path / "chroma"
+    make_store(database_path)
+    retriever = SemanticRetriever(
+        database_path=database_path,
+        model=FakeQueryModel({"animals": [1.0, 0.0, 0.0]}),
+    )
+
+    results = retriever.retrieve("animals", top_k=3, sentiment_label="negative")
+
+    assert [item["chunk_id"] for item in results] == ["dog-1"]
+
+
+def test_combined_filters_use_and_matching(tmp_path) -> None:
+    database_path = tmp_path / "chroma"
+    make_store(database_path)
+    retriever = SemanticRetriever(
+        database_path=database_path,
+        model=FakeQueryModel({"animals": [1.0, 0.0, 0.0]}),
+    )
+
+    results = retriever.retrieve(
+        "animals", top_k=3, topic_id=2, sentiment_label="positive"
+    )
+
+    assert [item["chunk_id"] for item in results] == ["cat-1"]
+
+
+def test_filter_with_no_matches_returns_empty_list(tmp_path) -> None:
+    database_path = tmp_path / "chroma"
+    make_store(database_path)
+    retriever = SemanticRetriever(
+        database_path=database_path,
+        model=FakeQueryModel({"animals": [1.0, 0.0, 0.0]}),
+    )
+
+    assert retriever.retrieve("animals", topic_id=99) == []
+
+
+def test_records_missing_filter_metadata_are_excluded(tmp_path) -> None:
+    database_path = tmp_path / "chroma"
+    _, collection = create_persistent_collection(database_path)
+    collection.upsert(
+        ids=["cat-without-topic"],
+        documents=["Cats are small domestic animals."],
+        embeddings=[[1.0, 0.0, 0.0]],
+        metadatas=[{"document_id": "doc-cat", "source": "test"}],
+    )
+    retriever = SemanticRetriever(
+        database_path=database_path,
+        model=FakeQueryModel({"animals": [1.0, 0.0, 0.0]}),
+    )
+
+    results = retriever.retrieve("animals", top_k=3, topic_id=2)
+
+    assert results == []
+
+
+@pytest.mark.parametrize("topic_id", [-1, 1.5, True, "2"])
+def test_invalid_topic_filters_are_rejected(tmp_path, topic_id: Any) -> None:
+    database_path = tmp_path / "chroma"
+    make_store(database_path)
+    model = FakeQueryModel({"animals": [1.0, 0.0, 0.0]})
+    retriever = SemanticRetriever(database_path=database_path, model=model)
+
+    with pytest.raises(ValueError, match="topic_id must be a non-negative integer"):
+        retriever.retrieve("animals", topic_id=topic_id)  # type: ignore[arg-type]
+
+    assert model.calls == []
+
+
+@pytest.mark.parametrize("sentiment_label", ["mixed", "Positive", "", 1])
+def test_invalid_sentiment_filters_are_rejected(tmp_path, sentiment_label: Any) -> None:
+    database_path = tmp_path / "chroma"
+    make_store(database_path)
+    retriever = SemanticRetriever(
+        database_path=database_path,
+        model=FakeQueryModel({"animals": [1.0, 0.0, 0.0]}),
+    )
+
+    with pytest.raises(ValueError, match="sentiment_label must be one of"):
+        retriever.retrieve("animals", sentiment_label=sentiment_label)  # type: ignore[arg-type]
 
 
 def test_configured_model_name_is_passed_to_loader(

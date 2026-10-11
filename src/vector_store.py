@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from numbers import Integral, Real
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,221 @@ DEFAULT_EMBEDDINGS_PATH = "data/processed/embeddings.parquet"
 DEFAULT_DATABASE_PATH = "data/vector_db"
 DEFAULT_COLLECTION_NAME = "rag_chunks"
 DEFAULT_BATCH_SIZE = 256
+DEFAULT_TOPIC_METADATA_PATH = "data/processed/topic_assignments.parquet"
+DEFAULT_SENTIMENT_METADATA_PATH = "data/processed/sentiment_scores.parquet"
+
+
+def _metadata_matches(
+    existing: dict[str, Any],
+    updated: dict[str, Any],
+) -> bool:
+    """Compare scalar metadata while tolerating Chroma float round-trip noise."""
+    if existing.keys() != updated.keys():
+        return False
+    for key, value in updated.items():
+        stored_value = existing[key]
+        if (
+            isinstance(value, Real)
+            and not isinstance(value, bool)
+            and isinstance(stored_value, Real)
+            and not isinstance(stored_value, bool)
+        ):
+            if not math.isclose(float(stored_value), float(value), rel_tol=1e-12, abs_tol=1e-12):
+                return False
+        elif stored_value != value:
+            return False
+    return True
+
+
+def _metadata_by_document_id(
+    table: Any,
+    name: str,
+    required_columns: set[str],
+) -> dict[str, dict[str, Any]]:
+    """Validate a document-level metadata table and return its keyed records."""
+    if table is None:
+        return {}
+    missing_columns = required_columns - set(table.columns)
+    if missing_columns:
+        raise ValueError(f"{name} metadata missing columns: {sorted(missing_columns)}")
+    if table["document_id"].isna().any():
+        raise ValueError(f"{name} metadata contains missing document IDs")
+    if not table["document_id"].is_unique:
+        raise ValueError(f"{name} metadata contains duplicate document IDs")
+
+    records: dict[str, dict[str, Any]] = {}
+    for row in table.to_dict("records"):
+        document_id = row["document_id"]
+        if not isinstance(document_id, str) or not document_id:
+            raise ValueError(f"{name} metadata contains an invalid document ID")
+        records[document_id] = row
+    return records
+
+
+def build_document_metadata(
+    topic_assignments: Any = None,
+    sentiment_scores: Any = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """Combine available topic and sentiment scalars by document ID.
+
+    Topic ID ``-1`` denotes an unassigned document and contributes no topic
+    fields. Optional probability/score columns are included only when present.
+    """
+    topics = _metadata_by_document_id(
+        topic_assignments,
+        "Topic",
+        {"document_id", "topic_id"},
+    )
+    sentiments = _metadata_by_document_id(
+        sentiment_scores,
+        "Sentiment",
+        {"document_id", "sentiment_label"},
+    )
+    combined: dict[str, dict[str, Any]] = {}
+
+    for document_id, row in topics.items():
+        topic_id = row["topic_id"]
+        if isinstance(topic_id, bool) or not isinstance(topic_id, Integral) or topic_id < -1:
+            raise ValueError(f"Topic metadata for {document_id!r} has an invalid topic_id")
+        if "topic_probability" in row and row["topic_probability"] is not None:
+            probability = row["topic_probability"]
+            if (
+                isinstance(probability, bool)
+                or not isinstance(probability, Real)
+                or not math.isfinite(float(probability))
+                or not 0.0 <= float(probability) <= 1.0
+            ):
+                raise ValueError(
+                    f"Topic metadata for {document_id!r} has an invalid topic_probability"
+                )
+        if topic_id == -1:
+            continue
+        fields: dict[str, Any] = {"topic_id": int(topic_id)}
+        if "topic_probability" in row and row["topic_probability"] is not None:
+            fields["topic_probability"] = float(row["topic_probability"])
+        combined.setdefault(document_id, {}).update(fields)
+
+    valid_sentiment_labels = {"negative", "neutral", "positive"}
+    for document_id, row in sentiments.items():
+        label = row["sentiment_label"]
+        if not isinstance(label, str) or label not in valid_sentiment_labels:
+            raise ValueError(
+                f"Sentiment metadata for {document_id!r} has an invalid sentiment_label"
+            )
+        fields = {"sentiment_label": label}
+        if "sentiment_score" in row and row["sentiment_score"] is not None:
+            score = row["sentiment_score"]
+            if (
+                isinstance(score, bool)
+                or not isinstance(score, Real)
+                or not math.isfinite(float(score))
+                or not -1.0 <= float(score) <= 1.0
+            ):
+                raise ValueError(
+                    f"Sentiment metadata for {document_id!r} has an invalid sentiment_score"
+                )
+            fields["sentiment_score"] = float(score)
+        combined.setdefault(document_id, {}).update(fields)
+
+    return combined, {
+        "topic_documents_available": sum(
+            1 for row in topics.values() if row["topic_id"] != -1
+        ),
+        "sentiment_documents_available": len(sentiments),
+    }
+
+
+def update_collection_metadata(
+    collection: Any,
+    topic_assignments: Any = None,
+    sentiment_scores: Any = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> dict[str, int]:
+    """Add document-level scalars to matching chunks without changing vectors.
+
+    Existing metadata is merged and preserved. Metadata IDs absent from the
+    collection are reported as unmatched; chunks without a document-level
+    match remain unchanged.
+    """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero")
+    metadata_by_document, available = build_document_metadata(
+        topic_assignments, sentiment_scores
+    )
+    before_count = collection.count()
+    stored = collection.get(include=["metadatas"])
+    stored_ids = stored.get("ids") or []
+    stored_metadatas = stored.get("metadatas")
+    if len(stored_ids) != len(set(stored_ids)):
+        raise ValueError("Collection contains duplicate chunk IDs")
+    if stored_metadatas is None or len(stored_metadatas) != len(stored_ids):
+        raise ValueError("Collection metadata is missing or incomplete")
+
+    collection_document_ids: set[str] = set()
+    pending_ids: list[str] = []
+    pending_metadatas: list[dict[str, Any]] = []
+    unchanged_chunks = 0
+    topic_chunks_covered = 0
+    sentiment_chunks_covered = 0
+
+    for chunk_id, raw_metadata in zip(stored_ids, stored_metadatas):
+        if not isinstance(raw_metadata, dict):
+            raise ValueError(f"Chunk {chunk_id!r} has invalid metadata")
+        document_id = raw_metadata.get("document_id")
+        if not isinstance(document_id, str) or not document_id:
+            raise ValueError(f"Chunk {chunk_id!r} is missing a valid document_id")
+        if not isinstance(raw_metadata.get("source"), str) or not raw_metadata["source"]:
+            raise ValueError(f"Chunk {chunk_id!r} is missing a valid source")
+        collection_document_ids.add(document_id)
+
+        additions = metadata_by_document.get(document_id, {})
+        merged = dict(raw_metadata)
+        merged.update(additions)
+        topic_chunks_covered += int("topic_id" in merged)
+        sentiment_chunks_covered += int("sentiment_label" in merged)
+        if _metadata_matches(raw_metadata, merged):
+            unchanged_chunks += 1
+        else:
+            pending_ids.append(chunk_id)
+            pending_metadatas.append(merged)
+
+    for start in range(0, len(pending_ids), batch_size):
+        collection.update(
+            ids=pending_ids[start : start + batch_size],
+            metadatas=pending_metadatas[start : start + batch_size],
+        )
+
+    after_count = collection.count()
+    if after_count != before_count:
+        raise RuntimeError(
+            f"Metadata update changed collection count from {before_count} to {after_count}."
+        )
+    topic_document_ids = {
+        document_id
+        for document_id, fields in metadata_by_document.items()
+        if "topic_id" in fields
+    }
+    sentiment_document_ids = {
+        document_id
+        for document_id, fields in metadata_by_document.items()
+        if "sentiment_label" in fields
+    }
+    return {
+        "records": after_count,
+        "chunks_updated": len(pending_ids),
+        "chunks_unchanged": unchanged_chunks,
+        **available,
+        "topic_documents_matched": len(topic_document_ids & collection_document_ids),
+        "topic_chunks_covered": topic_chunks_covered,
+        "sentiment_documents_matched": len(
+            sentiment_document_ids & collection_document_ids
+        ),
+        "sentiment_chunks_covered": sentiment_chunks_covered,
+        "unmatched_topic_documents": len(topic_document_ids - collection_document_ids),
+        "unmatched_sentiment_documents": len(
+            sentiment_document_ids - collection_document_ids
+        ),
+    }
 
 
 def create_persistent_collection(

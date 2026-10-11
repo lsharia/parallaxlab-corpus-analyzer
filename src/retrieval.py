@@ -14,6 +14,36 @@ from src.embeddings import DEFAULT_MODEL_NAME, load_embedding_model
 from src.vector_store import DEFAULT_COLLECTION_NAME, DEFAULT_DATABASE_PATH
 
 
+VALID_SENTIMENT_LABELS = {"negative", "neutral", "positive"}
+
+
+def build_metadata_filter(
+    topic_id: int | None = None,
+    sentiment_label: str | None = None,
+) -> dict[str, Any] | None:
+    """Validate requested metadata filters and build Chroma scalar equality ``where``."""
+    if topic_id is not None and (
+        not isinstance(topic_id, int) or isinstance(topic_id, bool) or topic_id < 0
+    ):
+        raise ValueError("topic_id must be a non-negative integer")
+    if sentiment_label is not None and (
+        not isinstance(sentiment_label, str)
+        or sentiment_label not in VALID_SENTIMENT_LABELS
+    ):
+        raise ValueError(
+            "sentiment_label must be one of: negative, neutral, positive"
+        )
+
+    filters: list[dict[str, Any]] = []
+    if topic_id is not None:
+        filters.append({"topic_id": topic_id})
+    if sentiment_label is not None:
+        filters.append({"sentiment_label": sentiment_label})
+    if not filters:
+        return None
+    return filters[0] if len(filters) == 1 else {"$and": filters}
+
+
 class SemanticRetriever:
     """Reuse a sentence-transformer model and persistent Chroma collection."""
 
@@ -60,12 +90,20 @@ class SemanticRetriever:
 
         self.model = model or load_embedding_model(model_name, device=device)
 
-    def retrieve(self, query_text: str, top_k: int = 5) -> list[dict[str, Any]]:
+    def retrieve(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        *,
+        topic_id: int | None = None,
+        sentiment_label: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Embed a query and return its nearest stored chunks with cosine distances."""
         if not isinstance(query_text, str) or not query_text.strip():
             raise ValueError("query_text must be a non-empty string")
         if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
             raise ValueError("top_k must be a positive integer")
+        where = build_metadata_filter(topic_id, sentiment_label)
 
         collection_size = self.collection.count()
         if collection_size == 0:
@@ -95,11 +133,14 @@ class SemanticRetriever:
             raise ValueError("Query embedding must be a non-empty finite vector")
 
         try:
-            matches = self.collection.query(
-                query_embeddings=[vector.tolist()],
-                n_results=result_count,
-                include=["documents", "metadatas", "distances"],
-            )
+            query_options = {
+                "query_embeddings": [vector.tolist()],
+                "n_results": result_count,
+                "include": ["documents", "metadatas", "distances"],
+            }
+            if where is not None:
+                query_options["where"] = where
+            matches = self.collection.query(**query_options)
         except Exception as error:
             raise RuntimeError(f"ChromaDB semantic query failed: {error}") from error
         self.last_latency_seconds = time.perf_counter() - started_at
@@ -131,6 +172,8 @@ def retrieve(
     model_name: str = DEFAULT_MODEL_NAME,
     device: str = "auto",
     model: Any | None = None,
+    topic_id: int | None = None,
+    sentiment_label: str | None = None,
 ) -> list[dict[str, Any]]:
     """Convenience function for a single semantic search operation."""
     retriever = SemanticRetriever(
@@ -140,7 +183,12 @@ def retrieve(
         device=device,
         model=model,
     )
-    return retriever.retrieve(query_text, top_k=top_k)
+    return retriever.retrieve(
+        query_text,
+        top_k=top_k,
+        topic_id=topic_id,
+        sentiment_label=sentiment_label,
+    )
 
 
 def main() -> int:
@@ -152,6 +200,12 @@ def main() -> int:
     parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME)
     parser.add_argument("--model", default=DEFAULT_MODEL_NAME)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--topic-id", type=int, default=None)
+    parser.add_argument(
+        "--sentiment-label",
+        choices=sorted(VALID_SENTIMENT_LABELS),
+        default=None,
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
@@ -163,7 +217,12 @@ def main() -> int:
             model_name=args.model,
             device=args.device,
         )
-        results = retriever.retrieve(args.query, top_k=args.top_k)
+        results = retriever.retrieve(
+            args.query,
+            top_k=args.top_k,
+            topic_id=args.topic_id,
+            sentiment_label=args.sentiment_label,
+        )
     except (FileNotFoundError, LookupError, RuntimeError, ValueError) as error:
         print(f"Retrieval failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1

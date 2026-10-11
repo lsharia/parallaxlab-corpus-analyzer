@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 import pytest
 
 from src.vector_store import (
+    build_document_metadata,
     create_persistent_collection,
     ingest_datasets,
     ingest_from_files,
+    update_collection_metadata,
     validate_collection,
 )
 
@@ -133,3 +137,141 @@ def test_missing_input_file_is_reported(tmp_path) -> None:
             tmp_path / "missing_embeddings.parquet",
             tmp_path / "chroma",
         )
+
+
+def test_document_metadata_is_mapped_and_validated() -> None:
+    topics = pd.DataFrame(
+        {
+            "document_id": ["doc-1", "doc-2"],
+            "topic_id": [3, -1],
+            "topic_probability": [0.8, 0.0],
+        }
+    )
+    sentiments = pd.DataFrame(
+        {
+            "document_id": ["doc-1", "doc-2"],
+            "sentiment_label": ["positive", "neutral"],
+            "sentiment_score": [0.7, 0.0],
+        }
+    )
+
+    metadata, available = build_document_metadata(topics, sentiments)
+
+    assert metadata == {
+        "doc-1": {
+            "topic_id": 3,
+            "topic_probability": 0.8,
+            "sentiment_label": "positive",
+            "sentiment_score": 0.7,
+        },
+        "doc-2": {"sentiment_label": "neutral", "sentiment_score": 0.0},
+    }
+    assert available == {
+        "topic_documents_available": 1,
+        "sentiment_documents_available": 2,
+    }
+
+
+def test_metadata_update_is_idempotent_and_preserves_existing_fields(tmp_path) -> None:
+    chunks, embeddings = make_inputs()
+    database_path = tmp_path / "chroma"
+    ingest_datasets(chunks, embeddings, database_path)
+    _, collection = create_persistent_collection(database_path)
+    collection.update(
+        ids=["chunk-1"],
+        metadatas=[
+            {
+                "document_id": "doc-1",
+                "source": "test-source",
+                "custom_field": "preserve-me",
+            }
+        ],
+    )
+    before = collection.get(include=["documents", "metadatas", "embeddings"])
+    topics = pd.DataFrame(
+        {
+            "document_id": ["doc-1", "doc-unmatched"],
+            "topic_id": [2, 1],
+            "topic_probability": [0.75, 0.6],
+        }
+    )
+    sentiments = pd.DataFrame(
+        {
+            "document_id": ["doc-1", "doc-2"],
+            "sentiment_label": ["positive", "neutral"],
+            "sentiment_score": [0.6, 0.0],
+        }
+    )
+
+    first = update_collection_metadata(collection, topics, sentiments, batch_size=2)
+    after_first = collection.get(include=["documents", "metadatas", "embeddings"])
+    second = update_collection_metadata(collection, topics, sentiments, batch_size=2)
+    after_second = collection.get(include=["documents", "metadatas", "embeddings"])
+
+    assert first["records"] == second["records"] == 3
+    assert first["chunks_updated"] == 3
+    assert second["chunks_updated"] == 0
+    assert first["topic_documents_matched"] == 1
+    assert first["topic_chunks_covered"] == 2
+    assert first["sentiment_documents_matched"] == 2
+    assert first["sentiment_chunks_covered"] == 3
+    assert first["unmatched_topic_documents"] == 1
+    assert set(before["ids"]) == set(after_first["ids"]) == set(after_second["ids"])
+    assert {row["document_id"] for row in after_first["metadatas"]} == {
+        "doc-1",
+        "doc-2",
+    }
+    after_by_id = dict(zip(after_first["ids"], after_first["metadatas"]))
+    assert after_by_id["chunk-1"]["source"] == "test-source"
+    assert after_by_id["chunk-1"]["custom_field"] == "preserve-me"
+    assert after_by_id["chunk-1"]["topic_id"] == 2
+    assert after_by_id["chunk-1"]["sentiment_label"] == "positive"
+    assert after_by_id["chunk-2"]["topic_id"] == 2
+    assert after_by_id["chunk-3"]["sentiment_label"] == "neutral"
+
+    rounded_metadata = dict(after_by_id["chunk-1"])
+    rounded_metadata["sentiment_score"] = math.nextafter(
+        rounded_metadata["sentiment_score"], math.inf
+    )
+    collection.update(ids=["chunk-1"], metadatas=[rounded_metadata])
+    second = update_collection_metadata(collection, topics, sentiments, batch_size=2)
+    after_second = collection.get(include=["documents", "metadatas", "embeddings"])
+
+    assert second["chunks_updated"] == 0
+
+    def normalize(values):
+        return [value.tolist() if hasattr(value, "tolist") else value for value in values]
+
+    assert normalize(before["documents"]) == normalize(after_first["documents"])
+    assert normalize(before["embeddings"]) == normalize(after_first["embeddings"])
+    assert normalize(after_first["documents"]) == normalize(after_second["documents"])
+    assert normalize(after_first["embeddings"]) == normalize(after_second["embeddings"])
+
+
+def test_metadata_update_handles_missing_tables_and_rejects_bad_rows(tmp_path) -> None:
+    chunks, embeddings = make_inputs()
+    database_path = tmp_path / "chroma"
+    ingest_datasets(chunks, embeddings, database_path)
+    _, collection = create_persistent_collection(database_path)
+
+    no_metadata = update_collection_metadata(collection)
+    assert no_metadata["chunks_updated"] == 0
+    assert no_metadata["chunks_unchanged"] == 3
+
+    duplicate_topics = pd.DataFrame(
+        {"document_id": ["doc-1", "doc-1"], "topic_id": [0, 1]}
+    )
+    with pytest.raises(ValueError, match="duplicate document IDs"):
+        update_collection_metadata(collection, topic_assignments=duplicate_topics)
+
+    invalid_sentiments = pd.DataFrame(
+        {"document_id": ["doc-1"], "sentiment_label": ["mixed"]}
+    )
+    with pytest.raises(ValueError, match="invalid sentiment_label"):
+        update_collection_metadata(collection, sentiment_scores=invalid_sentiments)
+
+    invalid_topics = pd.DataFrame(
+        {"document_id": ["doc-1"], "topic_id": [1.5]}
+    )
+    with pytest.raises(ValueError, match="invalid topic_id"):
+        update_collection_metadata(collection, topic_assignments=invalid_topics)
