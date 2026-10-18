@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import math
+import traceback
 from typing import Any
 
 from src.llm_client import (
@@ -27,10 +29,25 @@ from src.retrieval import SemanticRetriever, build_metadata_filter
 DEFAULT_TOP_K = 5
 DEFAULT_MAX_RETRIEVAL_DISTANCE = 0.7
 INSUFFICIENT_INFORMATION_ANSWER = "I don't have enough information in the available documents to answer that question."
+logger = logging.getLogger(__name__)
 
 PromptBuilder = Callable[
     [str, Sequence[Mapping[str, Any]], int], list[dict[str, str]]
 ]
+
+
+def _log_unexpected_pipeline_error(operation: str, error: Exception) -> None:
+    """Log safe traceback locations without exception or source-line text."""
+    frames = "\n".join(
+        f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}'
+        for frame in traceback.extract_tb(error.__traceback__)
+    )
+    logger.error(
+        "rag_pipeline_unexpected_failure operation=%s exception_type=%s\n%s",
+        operation,
+        type(error).__name__,
+        frames,
+    )
 
 
 @dataclass(frozen=True)
@@ -133,7 +150,8 @@ class RAGPipeline:
                 retrieval_started,
                 total_started,
             )
-        except Exception:
+        except Exception as error:
+            _log_unexpected_pipeline_error("retrieval", error)
             return self._failure_result(
                 normalized_query,
                 "Answer unavailable: retrieval failed. Please try again.",
@@ -203,7 +221,8 @@ class RAGPipeline:
                 total_started,
                 failure_kind,
             )
-        except Exception:
+        except Exception as error:
+            _log_unexpected_pipeline_error("generation", error)
             return self._result(
                 normalized_query,
                 "Answer unavailable: generation failed. Please try again.",

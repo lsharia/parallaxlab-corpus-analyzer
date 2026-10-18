@@ -1,0 +1,107 @@
+{
+    "dataset_id": "ag_news_manual_retrieval_v1",
+    "evaluation_unit": "document",
+    "annotation_note": "Relevant document IDs were selected by manually reviewing clean-corpus article text for each query. An empty relevant_document_ids list means no positive relevance judgments are available and the query is unscored, not that retrieved documents are verified nonrelevant.",
+    "queries": [
+        {
+            "query_id": "oil_stock_market",
+            "query": "How are crude oil prices affecting the stock market?",
+            "relevant_document_ids": [
+                "ag_news_train_000002",
+                "ag_news_train_000004",
+                "ag_news_train_000005",
+                "ag_news_train_000011",
+                "ag_news_train_000012"
+            ]
+        },
+        {
+            "query_id": "windows_security",
+            "query": "What security updates and vulnerabilities affect Windows XP?",
+            "relevant_document_ids": [
+                "ag_news_train_000332",
+                "ag_news_train_000363",
+                "ag_news_train_000402"
+            ]
+        },
+        {
+            "query_id": "google_ipo",
+            "query": "What happened with Google's IPO auction and stock offering?",
+            "relevant_document_ids": [
+                "ag_news_train_000013",
+                "ag_news_train_000020",
+                "ag_news_train_000036",
+                "ag_news_train_000371",
+                "ag_news_train_000393",
+                "ag_news_train_000404",
+                "ag_news_train_000423",
+                "ag_news_train_000425"
+            ]
+        },
+        {
+            "query_id": "najaf_sadr",
+            "query": "What is happening in Najaf between Iraqi forces and al-Sadr's militia?",
+            "relevant_document_ids": [
+                "ag_news_train_000507",
+                "ag_news_train_000525",
+                "ag_news_train_000539",
+                "ag_news_train_000613",
+                "ag_news_train_000955",
+                "ag_news_train_001476",
+                "ag_news_train_001577"
+            ]
+        },
+        {
+            "query_id": "athens_olympics",
+            "query": "Which athletes and teams are competing for medals at the Athens Olympics?",
+            "relevant_document_ids": [
+                "ag_news_train_000455",
+                "ag_news_train_000491",
+                "ag_news_train_000533",
+                "ag_news_train_000566",
+                "ag_news_train_000594"
+            ]
+        },
+        {
+            "query_id": "hurricane_charley",
+            "query": "How are Florida residents recovering from Hurricane Charley?",
+            "relevant_document_ids": [
+                "ag_news_train_000500",
+                "ag_news_train_000530",
+                "ag_news_train_000532",
+                "ag_news_train_000581",
+                "ag_news_train_000588",
+                "ag_news_train_000610",
+                "ag_news_train_000692"
+            ]
+        },
+        {
+            "query_id": "retailer_quarterly_profit",
+            "query": "Which retailers reported quarterly profit changes?",
+            "relevant_document_ids": [
+                "ag_news_train_000800",
+                "ag_news_train_000802",
+                "ag_news_train_000819",
+                "ag_news_train_000820",
+                "ag_news_train_000823",
+                "ag_news_train_000824"
+            ]
+        },
+        {
+            "query_id": "space_missions",
+            "query": "What space missions and spacecraft developments were reported?",
+            "relevant_document_ids": [
+                "ag_news_train_000116",
+                "ag_news_train_000122",
+                "ag_news_train_000129",
+                "ag_news_train_000131",
+                "ag_news_train_000279",
+                "ag_news_train_000280"
+            ]
+        },
+        {
+            "query_id": "unjudged_out_of_domain",
+            "query": "How do I bake sourdough bread underwater on Mars?",
+            "relevant_document_ids": []
+        }
+    ]
+}

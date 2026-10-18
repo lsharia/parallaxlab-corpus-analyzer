@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -171,8 +172,11 @@ def test_unusable_retrieved_context_is_not_sent_to_llm() -> None:
     assert llm_client.calls == []
 
 
-def test_retrieval_failure_returns_a_safe_result() -> None:
-    failure = RuntimeError("retrieval unavailable")
+def test_retrieval_failure_returns_safe_result_and_sanitized_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.ERROR, logger="src.rag_pipeline")
+    failure = RuntimeError("PRIVATE_RETRIEVAL_EXCEPTION_MESSAGE")
     pipeline, _, llm_client = make_pipeline(retrieval_error=failure)
 
     result = pipeline.answer_query("question")
@@ -180,10 +184,16 @@ def test_retrieval_failure_returns_a_safe_result() -> None:
     assert result.failure_kind == "retrieval_error"
     assert result.answer == "Answer unavailable: retrieval failed. Please try again."
     assert llm_client.calls == []
+    assert "operation=retrieval" in caplog.text
+    assert "exception_type=RuntimeError" in caplog.text
+    assert "PRIVATE_RETRIEVAL_EXCEPTION_MESSAGE" not in caplog.text
 
 
-def test_llm_failure_returns_a_safe_result() -> None:
-    failure = RuntimeError("generation unavailable")
+def test_llm_failure_returns_safe_result_and_sanitized_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.ERROR, logger="src.rag_pipeline")
+    failure = RuntimeError("PRIVATE_GENERATION_EXCEPTION_MESSAGE")
     pipeline, _, _ = make_pipeline(
         chunks=[
             {
@@ -199,6 +209,9 @@ def test_llm_failure_returns_a_safe_result() -> None:
 
     assert result.failure_kind == "generation_error"
     assert result.answer == "Answer unavailable: generation failed. Please try again."
+    assert "operation=generation" in caplog.text
+    assert "exception_type=RuntimeError" in caplog.text
+    assert "PRIVATE_GENERATION_EXCEPTION_MESSAGE" not in caplog.text
 
 
 @pytest.mark.parametrize("query", ["", "   ", None, 42])
