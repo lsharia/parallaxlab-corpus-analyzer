@@ -516,9 +516,3 @@ the manually curated files in `data/labels/` remain version-controlled.
   the pinned version was smoke-tested in isolation, while the full suite ran
   in the pre-existing environment. Use the documented requirements file for
   direct dependency versions; this is not bit-for-bit environment locking.
-
-## Remaining manual submission task
-
-Complete the Parallax Labs Exit Survey yourself:
-[Parallax Labs Exit Survey](https://forms.gle/LoMMiesjEywNivjY7). This project
-does not submit or verify the survey.
