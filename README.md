@@ -1,249 +1,390 @@
 # RAG Knowledge Extractor
 
-## Project Overview, Completed Scope, and Structure
+A local retrieval-augmented generation (RAG) application over a reproducible
+5,200-record subset of the AG News training corpus. It cleans and chunks news
+articles, embeds them with Sentence Transformers, stores and retrieves them
+with ChromaDB, and can use DeepSeek to generate answers grounded in retrieved
+context. Optional LDA topics and VADER sentiment labels can be attached to
+documents and used as retrieval filters.
 
-This project builds a retrieval-augmented generation (RAG) knowledge extraction pipeline over the AG News corpus. Work progressed from environment setup and corpus preparation in Week 1, through chunking, embeddings, and semantic retrieval in Week 2, LLM-backed grounded answers in Week 3, and NLP metadata and filtered retrieval in Week 4.
+## Features
 
-Week 1 established the Python environment, 5,000-document AG News acquisition, modular text cleaning, tests, and clean-dataset validation. Week 2 added recursive chunking, sentence-transformer embeddings, persistent ChromaDB ingestion, semantic retrieval, and retrieval latency benchmarking. Week 3 added DeepSeek integration, prompt engineering, RAG orchestration, safe error handling, relevance filtering, and an end-to-end benchmark. Week 4 added LDA topic modeling, VADER sentiment analysis and manual evaluation, ChromaDB metadata enrichment, optional topic/sentiment filters, and NLP validation.
+- Reproducible AG News download, preprocessing, chunking, and dataset checks.
+- `sentence-transformers/all-MiniLM-L6-v2` embeddings and persistent ChromaDB
+  storage.
+- Semantic retrieval, optional topic/sentiment filters, latency benchmarking,
+  and manually judged retrieval evaluation.
+- Bounded, context-grounded DeepSeek prompts and a separate structured
+  answer-to-source verification call; unsupported answers fail closed to an
+  abstention.
+- LDA topic assignments, VADER sentiment analysis, manual sentiment
+  evaluation, and ChromaDB metadata enrichment.
+- FastAPI `GET /health` and `POST /query` endpoints with query-free access
+  logging and generic client-facing errors.
+- Unit tests that mock the LLM and do not require a DeepSeek key or make live
+  provider calls.
 
-Week 5 Phases 1, 2, and 5 expose the existing RAG pipeline through a lazy-initialized FastAPI application, add query-free access logging, and add safe server-side diagnostics for internal retrieval and generation failures.
+## Internship scope by week
 
-The current artifacts contain 4,998 cleaned documents, 5,053 chunks, 5,053 embeddings of dimension 384, and 5,053 records in the `rag_chunks` collection. NLP outputs are heuristics: several LDA topics are mixed or difficult to interpret, and VADER has low neutral recall.
+- **Week 1:** AG News download, preprocessing, environment checks, and corpus
+  validation. The current 5,200-record raw subset produces 5,198 documents
+  after the unchanged language filter, meeting the 5,000-clean-document
+  target.
+- **Week 2:** Recursive chunking, sentence-transformer embeddings, persistent
+  ChromaDB storage, semantic retrieval, and retrieval benchmarking.
+- **Week 3:** DeepSeek client, grounding instructions, distance-based context
+  filtering, RAG orchestration, and an LLM-assisted claim-to-source check.
+  The verifier is a second call to the same configured model, not an
+  independent guarantee; semantic grounding accuracy and successful live
+  answer quality remain unmeasured until an authorized live evaluation is run.
+- **Week 4:** LDA topic and VADER sentiment outputs, manual sentiment labels,
+  ChromaDB metadata enrichment, and optional metadata filters. Preliminary
+  script-provided observations are available, but a human must complete and
+  retain the generated topic-review template before claiming manual review.
+- **Week 5:** FastAPI health/query endpoints, safe request/error logging,
+  retrieval metrics, and end-to-end RAG evidence/latency reporting.
+- **Week 6:** Reproduction and benchmark documentation. The required exit
+  survey is an external manual task and has not been verified here.
 
-```text
-RAG Knowledge Extractor Project/
-├── data/
-│   ├── labels/manual_sentiment_labels.csv  # Version-controlled sentiment labels
-│   ├── labels/retrieval_evaluation_queries.json  # Manual retrieval judgments
-│   ├── raw/                                # Ignored source corpus
-│   ├── processed/                          # Ignored generated Parquet files
-│   ├── vector_db/                          # Ignored persistent ChromaDB files
-│   └── benchmarks/                         # Ignored generated reports
-├── src/
-│   ├── api.py
-│   ├── chunking.py
-│   ├── embeddings.py
-│   ├── llm_client.py
-│   ├── preprocessing.py
-│   ├── prompts.py
-│   ├── rag_pipeline.py
-│   ├── retrieval.py
-│   ├── sentiment_analysis.py
-│   ├── topic_modeling.py
-│   └── vector_store.py
-├── scripts/
-│   ├── benchmark_rag.py
-│   ├── benchmark_retrieval.py
-│   ├── download_data.py
-│   ├── enrich_chroma_metadata.py
-│   ├── evaluate_retrieval.py
-│   ├── evaluate_rag.py
-│   ├── validate_dataset.py
-│   ├── validate_nlp_metadata.py
-│   └── verify_env.py
-├── tests/
-│   ├── test_api.py
-│   ├── test_benchmark_rag.py
-│   ├── test_benchmark_retrieval.py
-│   ├── test_chunking.py
-│   ├── test_embeddings.py
-│   ├── test_evaluate_retrieval.py
-│   ├── test_evaluate_rag.py
-│   ├── test_llm_client.py
-│   ├── test_nlp_metadata_validation.py
-│   ├── test_preprocessing.py
-│   ├── test_prompts.py
-│   ├── test_rag_pipeline.py
-│   ├── test_retrieval.py
-│   ├── test_sentiment_analysis.py
-│   ├── test_topic_modeling.py
-│   └── test_vector_store.py
-├── .env.example
-├── .gitignore
-├── requirements.txt
-└── README.md
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Hugging Face AG News] --> B[Raw JSONL]
+    B --> C[Cleaned corpus Parquet]
+    C --> D[Recursive text chunking]
+    D --> E[Chunk Parquet]
+    D --> F[Sentence Transformer]
+    F --> G[Embeddings Parquet]
+    E --> H[ChromaDB collection]
+    G --> H
+    C --> I[LDA topics and VADER sentiment]
+    I --> J[Enriched chunk metadata]
+    J --> H
+    K[Query] --> L[Semantic retrieval and filters]
+    H --> L
+    L --> M[Bounded grounded prompt]
+    M --> N[DeepSeek answer generation]
+    N --> O[Answer-to-source verification]
+    O --> Q[Supported answer or abstention]
+    L --> P[FastAPI /query]
+    Q --> P
 ```
 
-Dependencies are pinned in `requirements.txt`. Generated datasets, embeddings, ChromaDB files, benchmark output, virtual environments, and local model caches are Git-ignored. Sentence-transformers may cache model files outside the repository in the user's Hugging Face cache directory.
+The health endpoint does not initialize the RAG pipeline. Retrieval-only
+commands do not need a DeepSeek key. Answer generation and source verification
+each make a provider API request using the configured model and key.
 
-## Environment Setup and Configuration
+## Technology and prerequisites
 
-From the project root, create and activate a virtual environment and install dependencies:
+- Windows 10/11 with PowerShell and Python 3.12 (the existing environment was
+  verified with Python 3.12.4).
+- Direct dependencies are version-pinned in `requirements.txt` (it is not a
+  hash-locked transitive dependency file): pandas, NumPy, Pydantic,
+  PyArrow, Hugging Face `datasets`, Sentence Transformers, PyTorch, ChromaDB,
+  scikit-learn, VADER, langdetect, FastAPI, Uvicorn, HTTPX, python-dotenv,
+  spaCy, and pytest.
+- Network access for the initial AG News download and the first download of
+  the embedding model. CPU inference is supported; CUDA is optional.
+- A DeepSeek API key only for live answer generation, the RAG benchmark, and
+  end-to-end RAG and semantic grounding evaluation.
+
+The dataset and model can require additional disk space and first-run time.
+The project does not download the corpus or call DeepSeek while running tests.
+
+## Setup (PowerShell)
+
+Run commands from the project root. For a new clone, create an environment
+once, then install the pinned requirements:
 
 ```powershell
+Set-Location "C:\path\to\RAG Knowledge Extractor Project"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python scripts/verify_env.py
 ```
 
-For Windows Command Prompt, activate with:
+If PowerShell blocks activation, either adjust the policy for the current user
+according to your organization's guidance or invoke the environment
+interpreter directly:
 
-```bat
-.venv\Scripts\activate
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe scripts\verify_env.py
 ```
 
-The Week 3 DeepSeek client reads configuration from process environment variables or the project-root `.env` file. `.env.example` contains placeholders only. A valid `DEEPSEEK_API_KEY` is required for live generation and the real RAG benchmark, but is not required for unit tests, topic modeling, sentiment analysis, metadata enrichment, or retrieval-only commands.
+Do not create another environment or reinstall dependencies when an existing
+project-compatible interpreter is already available. Start a fresh PowerShell
+session after changing environment variables.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `DEEPSEEK_API_KEY` | Required for API calls | API credential |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | Model name |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL |
-| `DEEPSEEK_TIMEOUT` | `30` | Request timeout in seconds |
-| `DEEPSEEK_MAX_OUTPUT_TOKENS` | `1024` | Maximum generated tokens |
+## Configure DeepSeek locally
 
-To create the ignored local configuration file:
+The client reads `DEEPSEEK_API_KEY` from the process environment or the
+project-root `.env` file. Environment variables take precedence. The
+`.env.example` file contains placeholders only; `.env` is Git-ignored.
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Set `DEEPSEEK_API_KEY` in `.env` and optionally adjust other values. Process environment values take precedence. Never commit or paste real credentials into source, tests, documentation, or generated reports.
+Edit `.env` locally and replace the placeholder value. Optional settings are
+`DEEPSEEK_MODEL` (default `deepseek-chat`), `DEEPSEEK_BASE_URL` (default
+`https://api.deepseek.com`), `DEEPSEEK_TIMEOUT` (default 30 seconds), and
+`DEEPSEEK_MAX_OUTPUT_TOKENS` (default 1024). Never put a real key in source
+control, documentation, test output, or logs.
 
-## Week 1 - Environment, Data Ingestion, and Preprocessing
+## Reproduce the data pipeline
 
-The raw corpus is AG News (`fancyzhx/ag_news`) from Hugging Face, with one article per document. Acquire 5,000 training records:
+Run these steps from the project root, in order. Generated corpus, model,
+vector-store, and report files are local and ignored by Git.
 
 ```powershell
+# 1. Download 5,200 training articles from fancyzhx/ag_news.
 python scripts/download_data.py
-```
 
-This creates Git-ignored `data/raw/ag_news_train_5000.jsonl`. The acquisition script skips downloading when a valid output already exists.
-
-Clean and validate the dataset:
-
-```powershell
+# 2. Clean text and validate the output.
 python src/preprocessing.py
 python scripts/validate_dataset.py
-```
 
-The clean dataset is `data/processed/clean_corpus.parquet`, with `document_id`, source metadata, and cleaned `text`. The validated corpus contains 4,998 documents; two were filtered for language, and no empty documents were removed. The cleaner removes HTML, normalizes Unicode, and collapses whitespace without changing the raw source file.
-
-## Week 2 - Chunking, Embeddings, ChromaDB, Semantic Retrieval, and Benchmark
-
-### Chunking
-
-`src/chunking.py` uses deterministic recursive splitting, preferring paragraph breaks, line breaks, spaces, and finally character boundaries. Defaults are 500 characters per chunk with 50 characters of overlap; configure them with `--chunk-size` and `--chunk-overlap`.
-
-```powershell
+# 3. Split cleaned documents into overlapping chunks.
 python src/chunking.py
-```
 
-The Git-ignored `data/processed/chunks.parquet` contains 5,053 chunks from 4,998 documents. Chunk IDs are stable and each chunk preserves its `document_id` and `source`.
-
-### Embeddings
-
-`src/embeddings.py` uses `sentence-transformers/all-MiniLM-L6-v2` by default. Model, batch size, and device (`auto`, `cpu`, or `cuda`) are configurable with `--model`, `--batch-size`, and `--device`.
-
-```powershell
+# 4. Embed chunks; the first run downloads the configured model.
 python src/embeddings.py
-```
 
-The output `data/processed/embeddings.parquet` maps `chunk_id` to an embedding vector. The measured Week 2 run generated 5,053 vectors of dimension 384 using batch size 32 on CPU in 56.76 seconds, at 89.03 chunks per second.
-
-### ChromaDB
-
-`src/vector_store.py` stores chunk text and precomputed vectors in the persistent, Git-ignored `data/vector_db/` database, in collection `rag_chunks`. The collection contains 5,053 records with chunk text, embeddings, and `document_id`/`source` metadata. Batches default to 256; repeat ingestion does not duplicate existing IDs.
-
-```powershell
+# 5. Ingest chunk text and vectors into persistent ChromaDB.
 python src/vector_store.py
+
+# 6. Optional document-level analysis and metadata enrichment.
+python src/topic_modeling.py
+python src/sentiment_analysis.py
+python scripts/enrich_chroma_metadata.py
+python scripts/validate_nlp_metadata.py
 ```
 
-### Semantic Retrieval
+Defaults use 500-character chunks with 50-character overlap, and
+`all-MiniLM-L6-v2` embeddings with dimension 384. Relevant scripts expose
+additional options; inspect them with `--help`. Topic and sentiment metadata
+are optional and may be regenerated independently before enrichment.
+Embedding generation also writes `data/processed/embedding_metadata.json`
+with its model name, dimension, chunk count, and SHA-256 fingerprint of chunk
+IDs and exact source text. Chroma ingestion requires this manifest, verifies
+the fingerprint before touching the collection, and records the model
+configuration on the collection.
 
-`src/retrieval.py` embeds a natural-language query with the same sentence-transformer model and searches the existing collection. `top_k` controls the maximum results. Each result contains `chunk_id`, `document_id`, `source`, `text`, and ChromaDB `distance`; a lower distance means a closer vector match, not a similarity percentage.
+## Use semantic retrieval
 
 ```powershell
 python src/retrieval.py "oil prices and the stock market" --top-k 3
+python src/retrieval.py "space science news" --top-k 5 --topic-id 9
+python src/retrieval.py "company results" --sentiment-label positive
 ```
 
-### Retrieval Benchmark
+Filters can be combined; combined topic and sentiment filters use AND.
+Retrieval returns chunk text and a vector distance. A lower distance indicates
+a closer vector match; it is not a similarity percentage or relevance score.
 
-Run the retrieval-only benchmark:
+## Run the API
+
+Build the corpus, embeddings, and ChromaDB collection first. Then run the
+server from the project root:
+
+```powershell
+python -m uvicorn src.api:app --host 127.0.0.1 --port 8000
+```
+
+Check health:
+
+```powershell
+curl.exe http://127.0.0.1:8000/health
+```
+
+Submit a query (live generation requires a valid local API key):
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/query" `
+  -H "Content-Type: application/json" `
+  -d '{"query":"What happened in the news?","top_k":5}'
+```
+
+The JSON request accepts a non-empty `query`, positive integer `top_k`
+(default 5), and optional non-negative `topic_id` and `sentiment_label`
+(`negative`, `neutral`, or `positive`). A successful response contains the
+answer, retrieved/context chunks, retrieval/generation/verification/total
+latency, and `grounding_status` (`supported`, `unsupported`, or
+`insufficient_evidence`; `null` when verification was not attempted). The
+verifier is instructed to assess factual claims against the context supplied
+to generation. Unsupported or insufficient verdicts replace the candidate
+text with an abstention. A malformed or unavailable verifier
+returns `grounding_status: "unavailable"` and HTTP 502.
+Invalid input returns 422; missing local retrieval resources return 503;
+upstream timeouts return 504; other known provider failures return 502.
+Unexpected failures return a generic 500 response.
+There is no separate application-defined 400 response; request-body validation
+uses FastAPI's 422 response.
+
+Access logs contain method, endpoint, outcome, status, duration, and a safe
+failure category, but not query text, prompts, retrieved content, answers, or
+credentials. The API has no authentication or rate limiting and is intended
+for local use, not public deployment.
+
+## Tests and evaluation
+
+Run the complete test suite from the project root:
+
+```powershell
+python -m pytest -q
+```
+
+The latest full local run on Python 3.12.4 passed **267 tests**. It emitted one
+Starlette/AnyIO deprecation warning from the installed test-client dependency.
+Tests use local fixtures and mocked LLM responses. They do not establish live
+DeepSeek availability or successful generation.
+Validation used the existing environment: `pip check` passed, but installed
+Uvicorn was 0.53.0 while `requirements.txt` pins 0.34.0. The full test suite
+ran with the existing version. Separately, the pinned 0.34.0 was installed
+into a temporary isolated target and served `GET /health` successfully; the
+existing environment was not changed. Direct dependency pins do not lock all
+transitive versions or package hashes.
+
+### Retrieval relevance evaluation
+
+Run against the local ChromaDB collection:
+
+```powershell
+python scripts/evaluate_retrieval.py --k-values 1 3 5 10
+```
+
+The version-controlled `data/labels/retrieval_evaluation_queries.json`
+contains 9 queries: 8 with 47 total relevant query/document judgments and 1
+unjudged query. The evaluation maps ranked chunks to documents. Duplicate
+chunks for one document consume rank positions, while each relevant document
+counts at most once per cutoff. Precision@K divides by fixed K; recall@K
+divides by the number of manually relevant documents. Results are macro means
+over the 8 judged queries.
+
+Saved report: `data/benchmarks/retrieval_evaluation.json`.
+
+| K | Macro Precision@K | Macro Recall@K |
+|---:|---:|---:|
+| 1 | 0.0000 | 0.0000 |
+| 3 | 0.0000 | 0.0000 |
+| 5 | 0.0250 | 0.0179 |
+| 10 | 0.0625 | 0.0848 |
+
+These low scores apply only to this small, manually labeled sample. The
+judgments are incomplete and are not sufficient to establish overall
+retrieval quality or compare systems.
+
+### Retrieval performance benchmark
 
 ```powershell
 python scripts/benchmark_retrieval.py
 ```
 
-The completed benchmark used 10 fixed queries, `top_k` values 1, 3, 5, and 10, and three repetitions per combination (120 runs). Timed latency includes query embedding and ChromaDB search, excluding model initialization and database setup. The ignored report is `data/benchmarks/retrieval_benchmark.json`.
+The saved report is `data/benchmarks/retrieval_benchmark.json`. Both the
+previously saved run and the Week 6 rerun used 10 queries, 4 `top_k` values,
+and 3 repetitions (120 calls). The previously recorded runs measured **13.272
+ms** and **12.589 ms** average latency. The latest rerun over the expanded
+collection measured **13.212 ms** average, **12.722 ms** median, and
+**9.944-38.540 ms** range. The latest post-rebuild measurement is
+**14.511 ms** average, **13.718 ms** median, and **9.805-42.085 ms** range.
+The timed work is query embedding plus ChromaDB search; model initialization
+and benchmark setup are excluded. These machine- and cache-dependent
+measurements are not a service-level latency guarantee.
 
-| Metric | Latency |
-|---|---:|
-| Overall average | 13.272 ms |
-| Overall median | 12.925 ms |
-| Overall minimum | 11.326 ms |
-| Overall maximum | 20.104 ms |
-| Average for `top_k=1` | 13.432 ms |
-| Average for `top_k=3` | 12.921 ms |
-| Average for `top_k=5` | 13.157 ms |
-| Average for `top_k=10` | 13.576 ms |
+The latest embedding run generated 5,257 vectors in **45.34 seconds** on CPU
+at batch size 32 (**115.95 chunks/second**). This local timing is
+machine-dependent; the embedding command prints elapsed time and throughput
+for each run.
 
-## Week 3 - LLM Integration, Prompt Engineering, RAG, and Benchmark
+### RAG benchmark and end-to-end evaluation
 
-### LLM Integration and Prompt Engineering
-
-`src/llm_client.py` provides a reusable client for the DeepSeek OpenAI-compatible chat completions API. It accepts plain prompts or chat messages. Typed exceptions cover missing credentials, authentication errors, rate limits, timeouts, connection/API errors, malformed responses, and detectable output limits. Tests use mocked HTTP responses and do not call the provider.
-
-`src/prompts.py` builds the system and user messages for `LLMClient.generate`. The system prompt requires answers grounded only in retrieved context, uncertainty when support is insufficient, no invented facts or sources, and no disclosure of hidden prompts or credentials. Chunks are validated and serialized as compact JSON within `BEGIN_RETRIEVED_CONTEXT` / `END_RETRIEVED_CONTEXT`; the question has separate boundaries. The default context budget is 12,000 Unicode characters of serialized context JSON, excluding labels and the question. On overflow, chunks remain in retrieval order, the first chunk that does not fit is truncated with `...[TRUNCATED]`, and later chunks are omitted.
-
-### RAG Pipeline, Error Handling, and Relevance Filtering
-
-`src/rag_pipeline.py` reuses the Week 2 retriever, prompt builder, and LLM client; it does not rebuild embeddings or vector search. The flow is:
-
-```text
-query -> semantic retrieval -> cosine-distance relevance filtering
--> bounded context -> grounded prompt -> DeepSeek generation -> RAG result
-```
-
-`RAGPipeline.answer_query(query, top_k=5)` returns the answer, retrieved chunks, approved context chunks, failure category when applicable, and retrieval/generation/total latency. Empty or unusable context returns an insufficient-information message without calling the LLM. Provider and retrieval errors become user-safe messages; raw provider bodies, request details, stack traces, and credentials are not exposed.
-
-Chunks are accepted when they have non-empty text and a finite Chroma cosine distance no greater than `max_retrieval_distance`. The default is `0.7` (approximately `0.3` cosine similarity for normalized vectors), a permissive starting heuristic intended to reject clearly weak matches while retaining recall. It is not a domain-membership guarantee or a guarantee against hallucination.
-
-### End-to-End RAG Benchmark
-
-The benchmark runs five fixed AG News-oriented queries with three repetitions by default (15 runs):
+With a valid API key, both commands send requests to DeepSeek and may incur
+provider usage. Without a key, the RAG evaluation records missing-key
+failures instead of generating answers. Run these commands only when provider
+usage is intended.
 
 ```powershell
 python scripts/benchmark_rag.py --repetitions 3 --top-k 5
+python scripts/evaluate_rag.py --top-k 5
 ```
 
-It records per-run retrieval, generation, and total latency, `top_k`, whether generation completed, and a safe error category; summaries include average/median retrieval, generation, and total latency and minimum/maximum total latency. The ignored report is `data/benchmarks/rag_benchmark.json`. **A valid `DEEPSEEK_API_KEY` is required**, and running the benchmark makes provider API requests. No live DeepSeek API smoke test or real RAG benchmark has been completed; no result is inferred from the retrieval-only benchmark.
+The RAG benchmark writes `data/benchmarks/rag_benchmark.json`; the evaluation
+writes `data/benchmarks/rag_evaluation.json`. The latest validation rerun
+(written to a temporary file, leaving the existing report untouched) had 9
+cases: **0 successful, 9 failed**, all due to `missing_api_key`, and no
+provider requests or answers were generated. The latest all-attempt
+average/median wall times were **51.798 ms / 24.516 ms**. These are failed-run
+timings, not successful generation latency. The previous saved report measured
+**24.242 ms / 21.497 ms**, also failed-run timings. The context-recall proxy
+averaged 0.0179 for 8 judged cases; this measures relevant evidence present in
+context, not answer correctness. The
+`grounding_status` field is the same configured LLM's structured assessment,
+not an independently validated hallucination metric. No successful live LLM
+evaluation is claimed.
 
-## Week 4 - NLP Analysis and Filtered Retrieval
+### Grounding evaluation and what it measures
 
-### LDA Topic Modeling
-
-`src/topic_modeling.py` fits scikit-learn batch Latent Dirichlet Allocation on the cleaned corpus `text` column. `CountVectorizer` removes English and common news boilerplate stop words, excludes one-character and numeric-only tokens, and caps vocabulary size. The source corpus is read-only. The default is 10 topics with fixed random seed 42; configure `--n-topics`, `--random-state`, `--max-iter`, `--max-features`, and `--top-words`.
+Run the offline evaluation without credentials:
 
 ```powershell
-python src/topic_modeling.py
-python src/topic_modeling.py --n-topics 12 --random-state 42 --max-iter 10 --top-words 10
+python scripts/evaluate_grounding.py
 ```
 
-Outputs under Git-ignored `data/processed/`:
+`data/labels/grounding_evaluation_cases.json` contains six manually labeled,
+synthetic source/answer examples and eight fixed response-format cases. The
+offline command measures precision, recall, accuracy, and error cases for parsing
+the fixed verdict-response contract. These protocol metrics measure whether
+the code accepts the three permitted JSON verdicts and rejects malformed or
+ambiguous responses; they do **not** measure whether an LLM correctly
+understands evidence. The response fixtures are mocked, not model outputs.
+In the current run the eight protocol fixtures scored accuracy **1.000**,
+macro precision **1.000**, macro recall **1.000**, and **0** parser errors.
+This is a small contract-conformance result only; it does not represent
+semantic verifier precision or recall.
 
-| File | Schema | Description |
-|---|---|---|
-| `topic_assignments.parquet` | `document_id` (string), `topic_id` (integer), `topic_probability` (float) | One row per document; probability is the assigned topic's fitted probability. Topic `-1` and probability `0.0` indicate no usable terms. |
-| `topic_summary.parquet` | `topic_id` (integer), `top_words` (string) | Representative high-weight words for each topic. |
-| `topic_model_manifest.json` | `version`, `vectorizer_version`, `corpus_sha256`, `config`, `document_count` | Cache identity; matching valid outputs are reused unless `--force` is specified. |
-
-If fewer documents have usable terms than requested topics, the topic count is reduced to that document count. If none have usable terms, all assignments are unassigned and the summary is empty.
-
-### Sentiment Analysis and Manual Evaluation
-
-`src/sentiment_analysis.py` uses the local VADER lexicon from pinned `vaderSentiment==3.3.2`; it uses no paid API and downloads no model at runtime. The compound score ranges from -1 to 1. Scores at or above `0.05` are positive; scores at or below `-0.05` are negative; values between them are neutral.
+Semantic precision/recall for the six source/answer examples is **not
+measured** unless observed verifier outputs are supplied. To score recorded
+outputs, pass a JSON file mapping every case ID to an observed verdict
+(`supported`, `unsupported`, `insufficient_evidence`, or `error`):
 
 ```powershell
-python src/sentiment_analysis.py
+python scripts/evaluate_grounding.py --predictions data/labels/grounding_predictions.json
 ```
 
-The output `data/processed/sentiment_scores.parquet` has `document_id`, `sentiment_label` (`positive`, `neutral`, or `negative`), and `sentiment_score`. Missing or empty text is neutral with score `0.0`; short text is scored normally. The command also writes `data/benchmarks/sentiment_evaluation.json`.
+No observed predictions are currently included, and the offline command does
+not call DeepSeek. A small manually labeled set, even once scored, is not a
+guarantee or comprehensive estimate of hallucination detection.
 
-The version-controlled `data/labels/manual_sentiment_labels.csv` contains 60 manually assigned labels from the clean corpus, balanced at 20 per class. Labels were assigned by reviewing articles independently of VADER predictions. Positive means the central outcome is beneficial, successful, or an achievement; negative means harmful, a loss, failure, or setback; neutral means factual, mixed, or without clear overall polarity. Topic/category alone is not sentiment. This curated set is not a random sample and does not estimate corpus-wide performance.
+When live provider use is authorized and a key is configured, use the explicit
+opt-in mode to call the grounding verifier once for each of the six synthetic
+cases and write the recorded verdicts and score to a report:
 
-Measured with VADER 3.3.2 and the thresholds above:
+```powershell
+python scripts/evaluate_grounding.py --live `
+  --output "$env:TEMP\grounding_live_evaluation.json"
+```
+
+The report includes the observed case predictions, provider/model, UTC run
+timestamp, semantic confusion matrix and precision/recall, plus sanitized
+error types for failed requests. A provider or malformed-verdict failure is
+counted as an `error` prediction rather than hidden. This run sends up to six
+DeepSeek requests and may incur usage. The checked environment has no
+configured key, so semantic results remain unscored here. Alternatively,
+record externally observed verdicts in a JSON object with the documented
+`case_predictions` mapping and pass it through `--predictions`; predictions
+must cover exactly the six labeled case IDs. A saved live-evaluation report
+contains that same top-level mapping and can be passed directly to
+`--predictions` to reproduce its semantic metrics without another API call.
+
+### Sentiment evaluation
+
+`python src/sentiment_analysis.py` writes the VADER output and
+`data/benchmarks/sentiment_evaluation.json`. The available report scores 60
+manually labeled articles (20 per class), with accuracy 0.567. Neutral recall
+is 0.050:
 
 | Class | Precision | Recall | F1 | Support |
 |---|---:|---:|---:|---:|
@@ -251,352 +392,133 @@ Measured with VADER 3.3.2 and the thresholds above:
 | Neutral | 0.500 | 0.050 | 0.091 | 20 |
 | Positive | 0.531 | 0.850 | 0.654 | 20 |
 
-Accuracy is **0.567**. Confusion matrix rows are true labels and columns are predicted labels, ordered negative, neutral, positive: `[[16, 0, 4], [8, 1, 11], [2, 1, 17]]`. VADER is a general-purpose lexicon method; it can miss jargon, entity context, sarcasm, and mixed outcomes. Its score is not a calibrated probability, and its measured neutral recall is low.
+The sample is small and curated, not a random estimate of corpus-wide
+sentiment quality; VADER scores are not calibrated probabilities.
 
-### ChromaDB Metadata Enrichment
-
-After topic and sentiment outputs exist, enrich the existing `rag_chunks` collection:
-
-```powershell
-python scripts/enrich_chroma_metadata.py
-```
-
-The script joins document-level outputs to chunks by `document_id` and attaches scalar `topic_id`, `topic_probability`, `sentiment_label`, and `sentiment_score` where available. Topic ID `-1` is unassigned. Metadata-only `collection.update` preserves chunk IDs, text, embeddings, `document_id`, `source`, and other existing metadata; embeddings are not regenerated.
-
-Missing metadata files or document rows are skipped and reported; unmatched document IDs are counted. Duplicate IDs and invalid schemas or scalar values stop the update. Repeating with unchanged metadata is idempotent. The ignored coverage report is `data/benchmarks/chroma_metadata_enrichment.json`. The validated collection has 5,053 records, with metadata mapped from 4,998 documents.
-
-### Filtered Semantic Retrieval
-
-`src/retrieval.py` supports optional `topic_id` and `sentiment_label` equality filters independently or together. Combined filters use AND. Missing metadata does not match; no matching records returns an empty list. Omitting both filters preserves unfiltered behavior. The result schema, cosine-distance semantics, and `top_k` behavior are unchanged.
+The NLP metadata validation reports script-provided preliminary observations
+for 10 topics and checks metadata-filter behavior. These observations do not
+establish topic coherence or represent your approval. To generate a separate
+template with each topic's top words, three representative excerpts, and blank
+human-review fields, run:
 
 ```powershell
-# Unfiltered
-python src/retrieval.py "oil prices and the stock market" --top-k 3
-
-# Topic only, sentiment only, or both
-python src/retrieval.py "oil prices and the stock market" --top-k 3 --topic-id 4
-python src/retrieval.py "oil prices and the stock market" --sentiment-label negative
-python src/retrieval.py "oil prices and the stock market" --topic-id 4 --sentiment-label negative
+python scripts/validate_nlp_metadata.py `
+  --output "$env:TEMP\nlp_metadata_validation.json" `
+  --topic-review-template "data\benchmarks\lda_topic_review_template.json"
 ```
 
-The Python API accepts the same optional arguments, for example `RAGPipeline.answer_query(query, top_k=5, topic_id=4, sentiment_label="negative")`. Existing callers need not pass filters. Filter support has been validated, but no improvement in relevance has been established.
+Open `data\benchmarks\lda_topic_review_template.json`, compare the top words with the
+representative excerpts for **all ten topics**, and fill in
+`human_coherence_assessment` and `human_rationale` for each one. Keep
+`review_status` as pending until that review is actually complete. The
+template-generation command does not make human judgments or update topic
+quality metrics. No manually completed review is currently recorded.
 
-### NLP Validation and Measured Results
+## Current artifact sizes and project layout
 
-Reproduce topic review evidence, sentiment edge probes and evaluation, and live filter-conformance checks with:
+The regenerated local pipeline artifacts contain 5,200 authentic raw records,
+5,198 cleaned documents, 5,257 chunks, 5,257 vectors of dimension 384, and
+5,257 records in the `rag_chunks` ChromaDB collection. The existing
+language-filtering threshold was not changed. Generated files are local and
+may not exist in a fresh checkout.
 
-```powershell
-python scripts/validate_nlp_metadata.py
-```
-
-The command writes Git-ignored `data/benchmarks/nlp_metadata_validation.json`. It records the top words and three highest-probability documents per topic, manual topic assessments, edge-case sentiment results, a fresh manual-label evaluation, and four retrieval checks against `rag_chunks`. It uses the existing sentence-transformer and stored vectors; it does not regenerate document embeddings. Checks establish filter conformance, not improved relevance or answer quality.
-
-Manual review of topic top words and three representative documents per topic found:
-
-| Topic | Assessment | Observation |
-|---:|---|---|
-| 0 | Mixed | Political terms, but representatives include baseball and archaeology. |
-| 1 | Mixed | Windows/security cluster with a political-news outlier. |
-| 2 | Difficult | Music, trials, batteries, and sports words span unrelated representatives. |
-| 3 | Mixed | Iraq/Najaf stories, while Olympic terms also enter the topic. |
-| 4 | Difficult | Oil/stock words do not consistently fit sampled arts, currency, and city articles. |
-| 5 | Mixed | Earnings terms fit some examples, but a celebrity wedding is also prominent. |
-| 6 | Difficult | Hurricane words conflict with representative baseball, climate, and soccer articles. |
-| 7 | Mixed | Broad company/court/event terms span drug-import policy and aircraft trade. |
-| 8 | Coherent | Broad technology/business cluster around Google, IPOs, search, and stocks. |
-| 9 | Coherent | Space/science cluster includes China spaceflight and a Japanese lunar probe, with a software outlier. |
-
-These are qualitative observations, not formal coherence scores. Several topics remain mixed or difficult to interpret.
-
-Current sentiment probes returned `Win!` as positive (`0.6239`); empty and missing text as neutral (`0.0`); technical API/OAuth jargon as neutral (`0.0`); an opposing Microsoft-loss/Apple-profit example as positive (`0.6486`); and a factual committee sentence as neutral (`0.0`). The named-entity example illustrates that compound sentiment can obscure which entity or claim carries the polarity.
-
-On the live collection, unfiltered, topic-only (`topic_id=9`), sentiment-only (`negative`), and combined (`topic_id=8`, `positive`) retrieval each returned five results at `top_k=5`; every result satisfied its requested filter. These observations are conformance checks only, not evidence of better relevance.
-
-## Week 5 - FastAPI Application, Access Logging, and Safe Diagnostics (Phases 1, 2, and 5)
-
-Run the API from the project root:
-
-```powershell
-python -m uvicorn src.api:app --host 127.0.0.1 --port 8000
-```
-
-`GET /health` returns `{"status":"ok"}` without initializing the RAG pipeline. The first `POST /query` request creates the pipeline; the existing pipeline still initializes retrieval and generation resources lazily as needed.
-
-Example request:
-
-```json
-{
-	"query": "What happened in the news?",
-	"top_k": 5,
-	"topic_id": 8,
-	"sentiment_label": "positive"
-}
-```
-
-`query` must contain non-whitespace text. `top_k` is optional (default `5`); `topic_id` and `sentiment_label` are optional and use the same validation as the existing pipeline. The response contains the `RAGResult` fields: `query`, `answer`, `retrieved_chunks`, `context_chunks`, retrieval/generation/total latency, and `failure_kind`. Invalid request bodies receive a generic 422 response; unavailable pipeline initialization returns 503; known upstream failures map to 502, 503, or 504; unexpected query errors receive a generic 500 response. Request logs include method, endpoint, outcome, status, duration, and safe failure category, but not query text or retrieved content. Unexpected errors include server-side traceback frames without exception message text. Live DeepSeek generation still requires `DEEPSEEK_API_KEY`.
-
-## Week 5 - Retrieval Evaluation (Phase 3)
-
-The version-controlled `data/labels/retrieval_evaluation_queries.json` contains nine manually reviewed queries and relevant clean-corpus `document_id` labels (eight scored queries and one explicitly unjudged query). Labels were selected by reviewing corpus article text; they are small positive-relevance judgments, not automatically generated labels or exhaustive assessments of every corpus document.
-
-Run evaluation against the existing `rag_chunks` collection:
-
-```powershell
-python scripts/evaluate_retrieval.py --k-values 1 3 5 10
-```
-
-The ignored JSON report is `data/benchmarks/retrieval_evaluation.json`. It records dataset/query counts, K values and retriever configuration, per-query metrics and retrieved document IDs, plus macro aggregate metrics.
-
-The evaluation unit is a **document**. Ranked retrieval results are chunks; each chunk is matched using its `document_id`. Duplicate chunks for one document occupy their ranked positions but contribute at most one relevant hit per cutoff. Precision@K is unique relevant documents in the first K chunk positions divided by fixed K, even when fewer than K chunks are returned. Recall@K is unique relevant documents found divided by the number of unique manually labeled relevant document IDs. Aggregates are macro means across scored queries.
-
-An empty `relevant_document_ids` list means no positive relevance judgments are available: the query receives `null` metrics and is excluded from aggregates, rather than being treated as a verified query with zero relevant documents. Unlisted documents in scored queries count as nonrelevant for this run, so incomplete judgments can understate precision. These metrics evaluate this small labeled set only; they do not establish improvement over another retriever or prove corpus-wide quality.
-
-The latest run contains 9 queries: 8 scored, 1 unjudged, and 47 relevant query/document judgments. Macro Precision@K and Recall@K were:
-
-| K | Macro Precision@K | Macro Recall@K |
-|---:|---:|---:|
-| 1 | 0.0000 | 0.0000 |
-| 3 | 0.0000 | 0.0000 |
-| 5 | 0.0250 | 0.0179 |
-| 10 | 0.0875 | 0.1515 |
-
-## Week 5 - End-to-End RAG Evaluation (Phase 4)
-
-Run the existing manually judged queries through `RAGPipeline`:
-
-```powershell
-python scripts/evaluate_rag.py --top-k 5
-```
-
-The script reuses the query and relevant document IDs from `data/labels/retrieval_evaluation_queries.json`; it does not create reference answers or modify retrieval/generation behavior. It writes the Git-ignored `data/benchmarks/rag_evaluation.json`, containing per-case answers, retrieved/context document IDs, `failure_kind`, latency fields, answer-generation status, category-level failure counts, and aggregate latency statistics.
-
-The answer-related measure is `relevant_context_recall_proxy`: the fraction of manually relevant document IDs present in `RAGResult.context_chunks`. It measures evidence availability to the generator, not semantic answer correctness. No exact-match or text-overlap score is used. Review each recorded answer against its source documents for correctness and grounding.
-
-The latest local run had **9 cases: 0 successful and 9 failed**, all with `missing_api_key`; no answers were generated. Mean/median end-to-end latency was `0.0439` / `0.0229` seconds, measured on these failed runs; these values are not successful answer-generation latency. The relevant-context recall proxy averaged `0.0179` over the 8 judged cases; the unjudged case is excluded. This proxy and run do not establish answer quality or retrieval improvement. A valid `DEEPSEEK_API_KEY` is required to evaluate generated answers; without it, the report records safe pipeline failures.
-
-## Week 5 - API, Evaluation, and Reproducibility
-
-### Week 5 Overview
-
-Week 5 adds a FastAPI service around the existing RAG pipeline, query-free API access logging, safe server-side diagnostics for unexpected retrieval and generation errors, a manually judged retrieval evaluation, and an end-to-end RAG evaluation.
-
-The implementation reuses `RAGPipeline` rather than duplicating retrieval, prompt construction, or generation, keeping API behavior aligned with the existing command-line pipeline. Pipeline initialization is lazy, so checking `/health` does not load the embedding model or initialize the vector database. Access logs record request metadata but omit query text and retrieved content. Error responses are generic for unexpected failures, while known pipeline failures map to HTTP statuses without exposing provider details. Retrieval metrics evaluate unique relevant documents but keep a fixed K precision denominator so duplicate chunks consume rank positions. Queries without positive relevance labels are marked unjudged and excluded from aggregate metrics rather than counted as zero.
-
-Week 5 files:
+The latest regeneration produced `data/raw/ag_news_train_5200.jsonl`,
+`data/processed/clean_corpus.parquet`, `chunks.parquet`, `embeddings.parquet`,
+`embedding_metadata.json`, the LDA topic assignment/summary files, VADER
+sentiment scores, and the persistent `rag_chunks` collection. Metadata,
+retrieval, RAG, and benchmark reports are regenerated by their corresponding
+validation/evaluation commands.
 
 ```text
-src/api.py
-scripts/evaluate_retrieval.py
-scripts/evaluate_rag.py
-data/labels/retrieval_evaluation_queries.json
-tests/test_api.py
-tests/test_evaluate_retrieval.py
-tests/test_evaluate_rag.py
+.
+├── data/
+│   ├── labels/                 # Manual sentiment, retrieval, and grounding labels
+│   ├── raw/                    # Downloaded AG News JSONL (ignored)
+│   ├── processed/              # Clean corpus, chunks, embeddings, NLP output (ignored)
+│   ├── vector_db/              # Persistent ChromaDB store (ignored)
+│   └── benchmarks/             # Evaluation and benchmark reports (ignored)
+├── scripts/                    # Download, validation, evaluation, and benchmarks
+├── src/                        # Preprocessing, retrieval, RAG, API, and NLP modules
+├── tests/                      # Unit tests, including mocked LLM/API tests
+├── .env.example                # Safe configuration template
+├── .gitignore
+├── README.md
+└── requirements.txt            # Pinned dependencies
 ```
 
-The test count, project structure, and reproduction steps in this section supersede earlier project-structure and reproduction details; the 229-test count supersedes the earlier count of 188.
+Important generated files include `data/raw/ag_news_train_5200.jsonl`,
+`data/processed/clean_corpus.parquet`, `chunks.parquet`, `embeddings.parquet`,
+`embedding_metadata.json`,
+`topic_assignments.parquet`, `topic_summary.parquet`,
+`sentiment_scores.parquet`, and `data/vector_db/`. Evaluation reports are
+written under `data/benchmarks/`. `.gitignore` excludes generated data, local
+vector databases, benchmark reports, virtual environments, caches, and `.env`;
+the manually curated files in `data/labels/` remain version-controlled.
 
-### FastAPI Application, Access Logging, and Safe Diagnostics
+## Troubleshooting and limitations
 
-From the project root, start the local API:
+- **Missing corpus, model, or collection:** run the pipeline steps above in
+  order. The initial dataset/model download needs network access.
+- **CPU-only or slow embedding setup:** CPU is supported. Embedding model
+  initialization is outside retrieval benchmark timings; first use may be
+  substantially slower while the model downloads and loads.
+- **Missing API key:** set it in `.env` or the process environment. Retrieval,
+  health checks, and tests do not require it; live generation does.
+- **API import/startup errors:** activate the intended environment, install
+  `requirements.txt` into that environment, and run Uvicorn from the project
+  root.
+- **Weak retrieval scores:** the evaluation set is small and incomplete, and
+  the current measured precision/recall is low. It does not support a claim of
+  overall retrieval quality.
+- **Grounding verification:** a second call to the same configured LLM is
+  instructed to assess answer claims against retrieved sources. It can miss
+  unsupported details or incorrectly reject supported claims; it is not
+  independent, formally guaranteed, or semantically evaluated on the current
+  labeled examples. Prompt instructions alone are not detection. The offline
+  evaluation scores response parsing only unless observed model verdicts are
+  explicitly supplied.
+- **Live grounding evaluation:** `python scripts/evaluate_grounding.py --live`
+  is opt-in and makes one verifier request per labeled case (currently six).
+  It records actual verdicts, sanitized request-error types, model, timestamp,
+  and semantic metrics in the selected output JSON. This can incur provider
+  usage. No API key was present in the checked environment, so no live
+  evaluation result is currently recorded.
+- **Out-of-domain handling:** chunks above cosine distance 0.7 are withheld.
+  This heuristic is not calibrated or evaluated as an out-of-domain
+  classifier and is separate from answer-to-source verification.
+- **Updating ChromaDB:** ordinary ingestion updates records whose document,
+  metadata identity, or embedding vector changed, preserves enrichment on
+  unchanged records, and deletes IDs absent from current input. Re-run
+  topic/sentiment enrichment after changed records are ingested. Embedding
+  generation records model/dimension and a fingerprint of the chunk IDs and
+  source text in a manifest; ingestion rejects stale manifests before writing
+  to Chroma. Re-run `python src/embeddings.py` after any source-text change.
+  Chroma stores the model and dimension and rejects mismatches. An existing
+  legacy collection without a manifest also requires an explicit rebuild
+  before safe adoption.
+  After regenerating vectors for a different model or dimension, use
+  `python src/vector_store.py --rebuild`; this deletes and recreates only the
+  selected collection before ingesting current files. Use `--rebuild` only
+  when replacing that collection is intended.
+- **NLP quality:** LDA topics can be mixed; VADER can mishandle jargon,
+  context, sarcasm, and mixed outcomes. Metadata filter checks establish
+  filter behavior, not improved relevance.
+- **RAG evaluation:** without a valid key all cases fail before generation;
+  the report groups wall-clock latency into all attempts, successful generated
+  answers only, and failed attempts only. Do not interpret failed-attempt
+  timing as generation latency. Even successful evidence recall would not by
+  itself establish answer quality.
+- **Deployment:** the API lacks authentication, rate limiting, and production
+  hardening. Bind it to localhost unless separately secured.
+- **Dependency lock:** `requirements.txt` pins direct dependencies, but does
+  not lock the full transitive dependency graph or package hashes. The
+  existing environment's Uvicorn version differed from the declared pin;
+  the pinned version was smoke-tested in isolation, while the full suite ran
+  in the pre-existing environment. Use the documented requirements file for
+  direct dependency versions; this is not bit-for-bit environment locking.
 
-```powershell
-python -m uvicorn src.api:app --host 127.0.0.1 --port 8000
-```
+## Remaining manual submission task
 
-`GET /health` returns `{"status":"ok"}` without initializing the RAG pipeline. The first `POST /query` creates the pipeline; its retriever and generation client remain lazy as in the existing implementation. FastAPI's interactive API documentation is available at `http://127.0.0.1:8000/docs` with the default application configuration.
-
-The query request accepts a non-whitespace `query`, optional positive integer `top_k` (default `5`), optional non-negative integer `topic_id`, and optional `sentiment_label` (`negative`, `neutral`, or `positive`). The optional filters are passed to the existing pipeline. For example:
-
-```json
-{
-  "query": "What happened in the news?",
-  "top_k": 5,
-  "topic_id": 8,
-  "sentiment_label": "positive"
-}
-```
-
-The response preserves the `RAGResult` fields: `query`, `answer`, `retrieved_chunks`, `context_chunks`, `retrieval_latency_seconds`, `generation_latency_seconds`, `total_latency_seconds`, and `failure_kind`.
-
-| HTTP status | Meaning |
-|---:|---|
-| 200 | Query completed without a pipeline failure. |
-| 422 | Invalid request body; the client receives a generic validation message. |
-| 502 | Known upstream authentication, connection, response, output-limit, API, or generation failure. |
-| 503 | Pipeline initialization unavailable, retrieval resources unavailable, retrieval failure, or unavailable/rate-limited LLM service. |
-| 504 | Upstream LLM request timed out. |
-| 500 | Unexpected query error or an unrecognized pipeline failure; the client receives a generic message. |
-
-Access records contain the HTTP method, endpoint, outcome, status, duration, and safe failure category. They do not contain query text, prompts, retrieved text, answers, or credentials. For unexpected exceptions, server-side diagnostics contain the operation, exception type, and traceback frame locations, without exception messages or source lines.
-
-With the service running, send a query from PowerShell using `curl.exe` (rather than PowerShell's `curl` alias):
-
-```powershell
-curl.exe -X POST "http://127.0.0.1:8000/query" -H "Content-Type: application/json" -d '{"query":"What happened in the news?","top_k":5}'
-```
-
-Live answer generation requires a valid `DEEPSEEK_API_KEY`, configured in the process environment or local `.env` file. The API has no authentication or rate limiting and is intended for local use, not public deployment. On macOS/Linux, activate the environment and copy the example configuration with `source .venv/bin/activate` and `cp .env.example .env`; add credentials locally and do not commit `.env`.
-
-### Retrieval Evaluation
-
-`data/labels/retrieval_evaluation_queries.json` contains 9 manually reviewed queries: 8 scored queries, 1 explicitly unjudged query, and 47 relevant query/document judgments. These are small, positive-relevance judgments selected by reviewing article text, not exhaustive labels for the corpus.
-
-Run the evaluation against the existing `rag_chunks` collection:
-
-```powershell
-python scripts/evaluate_retrieval.py --k-values 1 3 5 10
-```
-
-The script writes the Git-ignored report `data/benchmarks/retrieval_evaluation.json`. It records the dataset and query counts, retriever configuration, per-query relevance labels and retrieved document IDs, per-query metrics, and macro aggregate metrics.
-
-The evaluation unit is a document, although retrieval returns ranked chunks. Each chunk is mapped to a document through `document_id`; duplicate chunks for one document occupy their rank positions but that document contributes at most one relevant hit at each cutoff. Precision@K is the number of unique relevant documents in the first K chunk positions divided by fixed K, even if fewer than K chunks were returned. Recall@K is the number of unique relevant documents found divided by the number of labeled relevant documents. Macro metrics are the arithmetic means over scored queries. An empty `relevant_document_ids` list produces null metrics and is excluded from aggregates.
-
-The rerun for this submission measured:
-
-| K | Macro Precision@K | Macro Recall@K |
-|---:|---:|---:|
-| 1 | 0.0000 | 0.0000 |
-| 3 | 0.0000 | 0.0000 |
-| 5 | 0.0250 | 0.0179 |
-| 10 | 0.0875 | 0.1515 |
-
-Retrieval quality is weak on this labeled set. Possible contributing factors are hypotheses, not tested explanations: the positive-only labels are incomplete and can understate precision; 500-character chunks may split useful context; `all-MiniLM-L6-v2` is a general-purpose rather than domain-tuned embedding model; and the collection represents a 5,000-record training subset rather than the full news domain. The measurements do not demonstrate improvement over another retriever or establish corpus-wide quality.
-
-### End-to-End RAG Evaluation
-
-Run the existing labeled queries through `RAGPipeline`:
-
-```powershell
-python scripts/evaluate_rag.py --top-k 5
-```
-
-The script reuses the queries and relevant document IDs from `data/labels/retrieval_evaluation_queries.json`; it does not create reference answers. It writes the Git-ignored `data/benchmarks/rag_evaluation.json`, which records per-case answers, retrieved and context document IDs, `failure_kind`, latency fields, generation status, failure counts, and aggregate latency statistics.
-
-`relevant_context_recall_proxy` is the fraction of manually relevant document IDs present in `RAGResult.context_chunks`. It measures evidence availability to the generator, not semantic answer correctness. The evaluation does not use exact-match or text-overlap answer scoring; any generated answer must be reviewed manually against its source documents.
-
-The latest saved local report contains **9 cases: 0 successful and 9 failed**, all with `missing_api_key`; no answers were generated. Mean/median end-to-end latency was **0.0439 / 0.0229 seconds** on failed runs only, not successful generation latency. The context-recall proxy averaged **0.0179** over 8 judged cases; the unjudged query is excluded. These results do not establish answer quality. To obtain live generation results, configure a valid `DEEPSEEK_API_KEY` locally and rerun `python scripts/evaluate_rag.py --top-k 5`; this makes provider API requests.
-
-### Week 5 Testing and Verification
-
-Run the focused API, pipeline, and evaluation tests, followed by the full suite, from the project root:
-
-Activate the project's `.venv` first, as shown in the setup steps below. The focused command invokes its interpreter explicitly.
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_api.py tests\test_rag_pipeline.py tests\test_evaluate_retrieval.py tests\test_evaluate_rag.py
-python -m pytest -q
-```
-
-The measured focused result was **69 passed**; the measured full-suite result was **229 passed in 7.87 seconds**. Tests use local fixtures, fake models, or mocked clients and do not make network or DeepSeek calls.
-
-### Updated Reproduction Steps
-
-From a clean clone, run these commands in order from the project root in PowerShell. The data download and model setup may require network access:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python scripts/verify_env.py
-python scripts/download_data.py
-python src/preprocessing.py
-python scripts/validate_dataset.py
-python src/chunking.py
-python src/embeddings.py
-python src/vector_store.py
-python src/topic_modeling.py
-python src/sentiment_analysis.py
-python scripts/enrich_chroma_metadata.py
-python scripts/validate_nlp_metadata.py
-python scripts/evaluate_retrieval.py --k-values 1 3 5 10
-python -m pytest -q
-```
-
-To serve the API after building the local data and vector collection, run this in a separate terminal:
-
-```powershell
-python -m uvicorn src.api:app --host 127.0.0.1 --port 8000
-```
-
-End-to-end RAG evaluation is optional and requires a valid locally configured `DEEPSEEK_API_KEY`:
-
-```powershell
-python scripts/evaluate_rag.py --top-k 5
-```
-
-On macOS/Linux, activate the virtual environment with `source .venv/bin/activate` and copy the local environment template with `cp .env.example .env`; use `python` for the commands above after activation.
-
-### Week 5 Known Limitations
-
-- Retrieval metrics are weak on this small labeled set: Precision@K / Recall@K are 0.0000 / 0.0000 at K=1 and K=3, 0.0250 / 0.0179 at K=5, and 0.0875 / 0.1515 at K=10.
-- Manual relevance labels are positive-only and incomplete, so measured precision may be understated.
-- No successful live DeepSeek generation, live RAG benchmark, or live RAG evaluation has been completed. The context-recall proxy measures evidence availability, not answer quality.
-- The API has no authentication, rate limiting, or deployment hardening; it is intended for local use.
-- Earlier limitations still apply: LDA topics are partly mixed or difficult to interpret; VADER's manual evaluation is curated, with low neutral recall; and metadata-filter conformance does not demonstrate improved relevance or answer quality.
-
-## Testing, Final Verification, Reproduction, and Known Limitations
-
-### Tests and Final Verification
-
-Run the focused API, pipeline, and evaluation tests, then the full test suite, from the project root using the existing Windows virtual environment:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_api.py tests\test_rag_pipeline.py tests\test_evaluate_retrieval.py tests\test_evaluate_rag.py
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-The suite covers preprocessing, chunking, embeddings, vector-store ingestion and metadata preservation, retrieval filters and both evaluation metrics, topic modeling, sentiment scoring/evaluation, NLP validation, benchmarks, and mocked LLM behavior. Tests use local fixtures or fake models and do not download the corpus, call DeepSeek, or run live benchmarks. The latest full-suite validation passed **229 tests**.
-
-Other checks:
-
-```powershell
-python scripts/verify_env.py
-python scripts/validate_dataset.py
-```
-
-The validated artifacts contain 4,998 clean documents, 5,053 chunks, 5,053 embeddings of dimension 384, and 5,053 `rag_chunks` records. Generated datasets, vector-store files, and benchmark reports are Git-ignored.
-
-### Full Pipeline Reproduction
-
-Required local pipeline steps, in dependency order, from a clean clone:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python scripts/verify_env.py
-python scripts/download_data.py
-python src/preprocessing.py
-python scripts/validate_dataset.py
-python src/chunking.py
-python src/embeddings.py
-python src/vector_store.py
-python src/topic_modeling.py
-python src/sentiment_analysis.py
-python scripts/enrich_chroma_metadata.py
-python scripts/validate_nlp_metadata.py
-python scripts/evaluate_retrieval.py --k-values 1 3 5 10
-python -m pytest -q
-```
-
-The first embedding or retrieval run may download and cache the sentence-transformer model. Dataset, Parquet, ChromaDB, and benchmark artifacts are local generated files and are not committed. The manual sentiment labels are version-controlled and refer to document IDs from the acquired clean corpus.
-
-Optional checks and benchmarks:
-
-```powershell
-python scripts/benchmark_retrieval.py
-python scripts/benchmark_rag.py --repetitions 3 --top-k 5
-python scripts/evaluate_rag.py --top-k 5
-```
-
-The retrieval-only benchmark needs the corpus, vectors, model, and Chroma collection. The RAG benchmark and end-to-end RAG evaluation require a valid `DEEPSEEK_API_KEY` to generate answers and make provider API requests. Neither a live RAG benchmark nor a successful live-LLM evaluation has been completed in this workspace.
-
-### Known Limitations
-
-- LDA topics are partly mixed or difficult to interpret; the topic assessments are qualitative, not formal coherence scores.
-- VADER's 60-example evaluation is curated rather than randomly sampled, so its results are not an unbiased estimate of corpus-wide performance; neutral recall is low on this set.
-- Sentiment scores are not calibrated confidence, and lexical scoring can mishandle jargon, named entities, sarcasm, and mixed outcomes.
-- Metadata filters were checked for conformance on the existing collection; filtered retrieval has not been shown to improve relevance or answer quality.
+Complete the Parallax Labs Exit Survey yourself:
+[Parallax Labs Exit Survey](https://forms.gle/LoMMiesjEywNivjY7). This project
+does not submit or verify the survey.

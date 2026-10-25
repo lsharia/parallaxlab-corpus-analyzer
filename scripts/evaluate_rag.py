@@ -38,10 +38,12 @@ GENERATION_FAILURE_KINDS = {
     "output_limit",
     "api_error",
     "generation_error",
+    "verification_error",
 }
 
 
 def validate_top_k(top_k: int) -> None:
+    """Reject non-positive or non-integer retrieval cutoffs."""
     if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
         raise ValueError("top_k must be a positive integer")
 
@@ -58,6 +60,18 @@ def _document_ids(chunks: Any) -> list[str]:
             and chunk["document_id"].strip()
         )
     )
+
+
+def _latency_statistics(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize wall latency for one explicitly selected outcome population."""
+    values = [run["end_to_end_latency_seconds"] for run in runs]
+    return {
+        "run_count": len(values),
+        "average_seconds": statistics.mean(values) if values else None,
+        "median_seconds": statistics.median(values) if values else None,
+        "minimum_seconds": min(values) if values else None,
+        "maximum_seconds": max(values) if values else None,
+    }
 
 
 def evaluate_case(
@@ -113,8 +127,12 @@ def evaluate_case(
             "failure_kind": failure_kind,
             "retrieval_latency_seconds": float(result.retrieval_latency_seconds),
             "generation_latency_seconds": float(result.generation_latency_seconds),
+            "verification_latency_seconds": float(
+                result.verification_latency_seconds
+            ),
             "pipeline_total_latency_seconds": float(result.total_latency_seconds),
             "end_to_end_latency_seconds": wall_latency,
+            "grounding_status": result.grounding_status,
         }
     except Exception:
         return {
@@ -132,8 +150,10 @@ def evaluate_case(
             "failure_kind": "unexpected_error",
             "retrieval_latency_seconds": None,
             "generation_latency_seconds": None,
+            "verification_latency_seconds": None,
             "pipeline_total_latency_seconds": None,
             "end_to_end_latency_seconds": time.perf_counter() - started_at,
+            "grounding_status": None,
         }
 
 
@@ -147,7 +167,6 @@ def run_evaluation(
     validate_top_k(top_k)
     queries = validate_dataset(dataset)
     runs = [evaluate_case(pipeline, case, top_k) for case in queries]
-    latencies = [run["end_to_end_latency_seconds"] for run in runs]
     failure_counts: dict[str, int] = {}
     for run in runs:
         failure_kind = run["failure_kind"]
@@ -163,29 +182,48 @@ def run_evaluation(
         for kind, count in failure_counts.items()
         if kind in GENERATION_FAILURE_KINDS
     )
+    grounding_verdict_counts: dict[str, int] = {}
+    for run in runs:
+        verdict = run["grounding_status"]
+        if verdict is not None:
+            grounding_verdict_counts[verdict] = (
+                grounding_verdict_counts.get(verdict, 0) + 1
+            )
 
     scored_evidence = [
         run["relevant_context_recall_proxy"]
         for run in runs
         if run["relevant_context_recall_proxy"] is not None
     ]
+    generated_answer_runs = [run for run in runs if run["answer_generated"]]
+    failed_runs = [run for run in runs if run["failure_kind"] is not None]
+    non_generation_runs = [
+        run
+        for run in runs
+        if not run["answer_generated"] and run["failure_kind"] is None
+    ]
     summary = {
         "case_count": len(runs),
         "successful_runs": sum(run["failure_kind"] is None for run in runs),
         "failed_runs": sum(run["failure_kind"] is not None for run in runs),
         "answer_generated_runs": sum(run["answer_generated"] for run in runs),
+        "non_generation_runs_without_failure": len(non_generation_runs),
         "failure_counts_by_category": failure_counts,
         "retrieval_failure_count": retrieval_failure_count,
         "generation_failure_count": generation_failure_count,
+        "grounding_verdict_counts": grounding_verdict_counts,
         "other_failure_count": sum(
             count
             for kind, count in failure_counts.items()
             if kind not in RETRIEVAL_FAILURE_KINDS | GENERATION_FAILURE_KINDS
         ),
-        "average_end_to_end_latency_seconds": statistics.mean(latencies) if latencies else None,
-        "median_end_to_end_latency_seconds": statistics.median(latencies) if latencies else None,
-        "minimum_end_to_end_latency_seconds": min(latencies) if latencies else None,
-        "maximum_end_to_end_latency_seconds": max(latencies) if latencies else None,
+        "latency_seconds": {
+            "all_attempts": _latency_statistics(runs),
+            "successful_generated_answers": _latency_statistics(
+                generated_answer_runs
+            ),
+            "failed_attempts": _latency_statistics(failed_runs),
+        },
         "mean_relevant_context_recall_proxy": (
             statistics.mean(scored_evidence) if scored_evidence else None
         ),
@@ -201,7 +239,7 @@ def run_evaluation(
                 "collection_name", DEFAULT_COLLECTION_NAME
             ),
             "latency_measurement": "wall time around RAGPipeline.answer_query after pipeline/retriever initialization",
-            "answer_quality_measure": "relevant_context_recall_proxy: manually relevant document IDs present in RAGResult.context_chunks divided by judged relevant document IDs; not semantic answer correctness",
+            "answer_quality_measure": "relevant_context_recall_proxy measures evidence availability, not answer correctness; grounding_status is an LLM-assisted check by the same configured model, not an independent factuality guarantee",
             **(configuration or {}),
         },
         "dataset_size": {
@@ -218,6 +256,7 @@ def run_evaluation(
 
 
 def save_report(report: dict[str, Any], output_path: Path) -> None:
+    """Write a serialized evaluation report to its requested path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -225,6 +264,7 @@ def save_report(report: dict[str, Any], output_path: Path) -> None:
 
 
 def main() -> int:
+    """Run the end-to-end RAG evaluation and save its report."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
@@ -273,10 +313,13 @@ def main() -> int:
     print(f"Successful runs: {report['summary']['successful_runs']}")
     print(f"Failed runs: {report['summary']['failed_runs']}")
     print(f"Failure counts: {report['summary']['failure_counts_by_category']}")
+    latency = report["summary"]["latency_seconds"]
+    print(f"Attempt latency (all runs): {latency['all_attempts']}")
     print(
-        "Average end-to-end latency: "
-        f"{report['summary']['average_end_to_end_latency_seconds']} seconds"
+        "End-to-end latency (successful generated answers only): "
+        f"{latency['successful_generated_answers']}"
     )
+    print(f"Attempt latency (failed runs only): {latency['failed_attempts']}")
     print(f"Report: {output_path}")
     return 0
 

@@ -1,0 +1,132 @@
+{
+  "dataset_id": "rag_grounding_manual_cases_v1",
+  "annotation_note": "A small, manually authored synthetic illustrative sample. Labels describe whether the candidate answer is supported by the supplied source text, contradicted or otherwise unsupported, or not answerable from the evidence. These labels are not predictions by the LLM verifier and do not measure its semantic accuracy.",
+  "cases": [
+    {
+      "case_id": "revenue_supported",
+      "query": "What revenue did the company report?",
+      "source_chunks": [
+        {
+          "chunk_id": "source-1",
+          "source": "annual-report",
+          "text": "The company reported revenue of $12 million for fiscal year 2025."
+        }
+      ],
+      "answer": "The company reported $12 million in revenue for fiscal year 2025.",
+      "expected_verdict": "supported",
+      "rationale": "The amount and reporting period are directly stated in the source."
+    },
+    {
+      "case_id": "revenue_contradicted",
+      "query": "What revenue did the company report?",
+      "source_chunks": [
+        {
+          "chunk_id": "source-1",
+          "source": "annual-report",
+          "text": "The company reported revenue of $12 million for fiscal year 2025."
+        }
+      ],
+      "answer": "The company reported $15 million in revenue for fiscal year 2025.",
+      "expected_verdict": "unsupported",
+      "rationale": "The answer's amount conflicts with the amount stated in the source."
+    },
+    {
+      "case_id": "profit_margin_missing",
+      "query": "What was the company's profit margin?",
+      "source_chunks": [
+        {
+          "chunk_id": "source-1",
+          "source": "annual-report",
+          "text": "The company reported revenue of $12 million for fiscal year 2025."
+        }
+      ],
+      "answer": "The company's profit margin was 18%.",
+      "expected_verdict": "insufficient_evidence",
+      "rationale": "The source reports revenue but gives no profit or margin information."
+    },
+    {
+      "case_id": "event_date_supported",
+      "query": "When did the event take place?",
+      "source_chunks": [
+        {
+          "chunk_id": "source-2",
+          "source": "event-notice",
+          "text": "Organizers held the event in Boston on June 10, 2024."
+        }
+      ],
+      "answer": "The event took place in Boston on June 10, 2024.",
+      "expected_verdict": "supported",
+      "rationale": "The location and date are both stated in the source."
+    },
+    {
+      "case_id": "unsupported_extra_claim",
+      "query": "When did the event take place?",
+      "source_chunks": [
+        {
+          "chunk_id": "source-2",
+          "source": "event-notice",
+          "text": "Organizers held the event in Boston on June 10, 2024."
+        }
+      ],
+      "answer": "The event took place in Boston on June 10, 2024, and 5,000 people attended.",
+      "expected_verdict": "unsupported",
+      "rationale": "The date and location are supported, but the attendance claim is not in evidence."
+    },
+    {
+      "case_id": "duration_not_reported",
+      "query": "How long did the committee meeting last?",
+      "source_chunks": [
+        {
+          "chunk_id": "source-3",
+          "source": "meeting-summary",
+          "text": "The committee met on Tuesday to discuss the budget."
+        }
+      ],
+      "answer": "The committee meeting lasted two hours.",
+      "expected_verdict": "insufficient_evidence",
+      "rationale": "The source confirms the meeting occurred but does not provide its duration."
+    }
+  ],
+  "protocol_cases": [
+    {
+      "case_id": "valid_supported",
+      "response": "{\"verdict\":\"supported\"}",
+      "expected_output": "supported"
+    },
+    {
+      "case_id": "valid_unsupported",
+      "response": "{\"verdict\":\"unsupported\"}",
+      "expected_output": "unsupported"
+    },
+    {
+      "case_id": "valid_insufficient",
+      "response": "{\"verdict\":\"insufficient_evidence\"}",
+      "expected_output": "insufficient_evidence"
+    },
+    {
+      "case_id": "malformed_json",
+      "response": "not-json",
+      "expected_output": "error"
+    },
+    {
+      "case_id": "unknown_verdict",
+      "response": "{\"verdict\":\"uncertain\"}",
+      "expected_output": "error"
+    },
+    {
+      "case_id": "unexpected_extra_field",
+      "response": "{\"verdict\":\"supported\",\"explanation\":\"ignored\"}",
+      "expected_output": "error"
+    },
+    {
+      "case_id": "invalid_verdict_type",
+      "response": "{\"verdict\":[]}",
+      "expected_output": "error"
+    },
+    {
+      "case_id": "non_object_json",
+      "response": "null",
+      "expected_output": "error"
+    }
+  ]
+}

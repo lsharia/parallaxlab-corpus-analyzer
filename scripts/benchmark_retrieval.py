@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.embeddings import DEFAULT_MODEL_NAME
 from src.retrieval import SemanticRetriever
 from src.vector_store import DEFAULT_COLLECTION_NAME, DEFAULT_DATABASE_PATH

@@ -4,7 +4,43 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.validate_nlp_metadata import validate_retrieval_results
+from scripts.validate_nlp_metadata import (
+    build_topic_review_template,
+    validate_retrieval_results,
+)
+
+
+def test_topic_review_template_leaves_human_judgments_pending() -> None:
+    topic_evidence = [
+        {
+            "topic_id": 3,
+            "top_words": "market, shares, company",
+            "assessment": "coherent",
+            "observation": "Automated observation.",
+            "representative_documents": [
+                {
+                    "document_id": "doc-1",
+                    "topic_probability": 0.8,
+                    "text_preview": "Company shares rose.",
+                }
+            ],
+        }
+    ]
+
+    template = build_topic_review_template(topic_evidence)
+
+    assert template["review_status"] == "pending_human_review"
+    assert template["topics"][0]["human_coherence_assessment"] is None
+    assert template["topics"][0]["human_rationale"] == ""
+    assert "Automated observation" not in str(template)
+    assert template["topics"][0]["representative_documents"] == topic_evidence[0][
+        "representative_documents"
+    ]
+
+
+def test_topic_review_template_requires_topic_evidence() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        build_topic_review_template([])
 
 
 def test_retrieval_validation_accepts_matching_metadata() -> None:

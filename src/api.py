@@ -28,6 +28,7 @@ RAG_FAILURE_STATUS_CODES = {
     "output_limit": 502,
     "api_error": 502,
     "generation_error": 502,
+    "verification_error": 502,
 }
 
 
@@ -58,6 +59,7 @@ class QueryRequest(BaseModel):
     @field_validator("query")
     @classmethod
     def strip_and_validate_query(cls, value: str) -> str:
+        """Normalize the query and reject whitespace-only input."""
         normalized = value.strip()
         if not normalized:
             raise ValueError("query must contain non-whitespace characters")
@@ -84,8 +86,12 @@ class QueryResponse(BaseModel):
     retrieved_chunks: list[RetrievedChunkResponse]
     retrieval_latency_seconds: float
     generation_latency_seconds: float
+    verification_latency_seconds: float
     total_latency_seconds: float
     context_chunks: list[RetrievedChunkResponse]
+    grounding_status: Literal[
+        "supported", "unsupported", "insufficient_evidence", "unavailable"
+    ] | None
     failure_kind: str | None = None
 
 

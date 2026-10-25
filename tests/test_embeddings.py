@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from types import ModuleType
 
@@ -10,6 +11,7 @@ import pandas as pd
 import pytest
 
 from src import embeddings
+from src.embedding_manifest import chunk_source_fingerprint
 
 
 class FakeSentenceTransformer:
@@ -130,6 +132,44 @@ def test_chunk_id_mapping_is_preserved_and_unique(
     assert metadata["device"] == "cpu"
     assert metadata["batch_size"] == 1
     assert fake_model.batch_sizes == [1]
+
+
+def test_embedding_file_writes_model_manifest(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chunks = pd.DataFrame(
+        {"chunk_id": ["chunk-a"], "text": ["A source article."]}
+    )
+    input_path = tmp_path / "chunks.parquet"
+    chunks.to_parquet(input_path, index=False)
+    monkeypatch.setattr(
+        embeddings,
+        "load_embedding_model",
+        lambda *args: FakeSentenceTransformer("test-model", "cpu"),
+    )
+    monkeypatch.setattr(embeddings, "select_device", lambda device: "cpu")
+
+    output_path = tmp_path / "embeddings.parquet"
+    manifest_path = tmp_path / "embedding_metadata.json"
+    result = embeddings.embed_chunk_dataset(
+        input_path=input_path,
+        output_path=output_path,
+        model_name="custom/model",
+        device="cpu",
+        show_progress_bar=False,
+        metadata_path=manifest_path,
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert output_path.is_file()
+    assert manifest["model_name"] == "custom/model"
+    assert manifest["embedding_dimension"] == 3
+    assert manifest["number_of_chunks"] == 1
+    assert manifest["chunk_source_sha256"] == chunk_source_fingerprint(
+        [("chunk-a", "A source article.")]
+    )
+    assert result["model_name"] == "custom/model"
 
 
 def test_non_unique_chunk_ids_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

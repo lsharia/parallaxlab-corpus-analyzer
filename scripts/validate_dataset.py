@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 
-REQUIRED_COLUMNS = {"document_id", "source", "text"}
-MIN_DOCUMENTS = 1
+REQUIRED_COLUMNS: set[str] = {"document_id", "source", "text"}
+MIN_DOCUMENTS: int = 5_000
 
 
 def default_dataset_path() -> Path:
@@ -31,7 +31,10 @@ def validate_dataset(dataset_path: Path) -> dict[str, float | int]:
     if missing_columns:
         raise ValueError(f"Missing required columns: {sorted(missing_columns)}")
     if len(dataframe) < MIN_DOCUMENTS:
-        raise ValueError("The clean dataset contains no documents.")
+        raise ValueError(
+            f"The clean dataset contains {len(dataframe):,} documents; "
+            f"at least {MIN_DOCUMENTS:,} are required."
+        )
     if dataframe["document_id"].isna().any():
         raise ValueError("The clean dataset contains missing document IDs.")
     if not dataframe["document_id"].is_unique:

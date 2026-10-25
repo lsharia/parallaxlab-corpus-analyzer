@@ -187,7 +187,10 @@ class LLMClient:
         message = choice.get("message")
         if not isinstance(message, Mapping) or not isinstance(message.get("content"), str):
             raise InvalidAPIResponseError("The LLM provider response has no text content.")
-        return message["content"]
+        content = message["content"]
+        if not content.strip():
+            raise InvalidAPIResponseError("The LLM provider returned empty text content.")
+        return content
 
     @staticmethod
     def _is_output_limit_error(error_text: str) -> bool:

@@ -47,16 +47,26 @@ class FakeRetriever:
 
 
 class FakeLLMClient:
-    def __init__(self, answer: str = "Generated answer.", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        answer: str = "Generated answer.",
+        error: Exception | None = None,
+        verification_response: str = '{"verdict":"supported"}',
+        verification_error: Exception | None = None,
+    ) -> None:
         self.answer = answer
         self.error = error
+        self.verification_response = verification_response
+        self.verification_error = verification_error
         self.calls: list[list[dict[str, str]]] = []
 
     def generate(self, messages: list[dict[str, str]]) -> str:
         self.calls.append(messages)
+        if len(self.calls) > 1 and self.verification_error is not None:
+            raise self.verification_error
         if self.error is not None:
             raise self.error
-        return self.answer
+        return self.answer if len(self.calls) == 1 else self.verification_response
 
     def close(self) -> None:
         pass
@@ -68,9 +78,16 @@ def make_pipeline(
     retrieval_error: Exception | None = None,
     llm_error: Exception | None = None,
     prompt_builder: Any = None,
+    verification_response: str = '{"verdict":"supported"}',
+    verification_error: Exception | None = None,
 ) -> tuple[RAGPipeline, FakeRetriever, FakeLLMClient]:
     retriever = FakeRetriever(chunks, retrieval_error)
-    llm_client = FakeLLMClient(answer, llm_error)
+    llm_client = FakeLLMClient(
+        answer,
+        llm_error,
+        verification_response=verification_response,
+        verification_error=verification_error,
+    )
     pipeline = RAGPipeline(
         retriever=retriever,  # type: ignore[arg-type]
         llm_client=llm_client,  # type: ignore[arg-type]
@@ -106,6 +123,8 @@ def test_successful_end_to_end_pipeline_preserves_sources_and_latencies() -> Non
 
     assert result.query == "What does the guide describe?"
     assert result.answer == "The guide describes semantic search."
+    assert result.grounding_status == "supported"
+    assert result.verification_latency_seconds >= 0
     assert result.retrieved_chunks == chunks
     assert retriever.calls == [("What does the guide describe?", 3)]
     assert captured == {
@@ -113,7 +132,8 @@ def test_successful_end_to_end_pipeline_preserves_sources_and_latencies() -> Non
         "retrieved": chunks,
         "limit": 256,
     }
-    assert llm_client.calls == [[{"role": "user", "content": "controlled prompt"}]]
+    assert llm_client.calls[0] == [{"role": "user", "content": "controlled prompt"}]
+    assert len(llm_client.calls) == 2
     assert result.retrieval_latency_seconds >= 0
     assert result.generation_latency_seconds >= 0
     assert result.total_latency_seconds >= 0
@@ -157,6 +177,7 @@ def test_empty_retrieval_returns_insufficient_information_without_llm_call() -> 
     result = pipeline.answer_query("question")
 
     assert result.answer == INSUFFICIENT_INFORMATION_ANSWER
+    assert result.grounding_status is None
     assert result.retrieved_chunks == []
     assert result.generation_latency_seconds == 0
     assert llm_client.calls == []
@@ -168,6 +189,7 @@ def test_unusable_retrieved_context_is_not_sent_to_llm() -> None:
     result = pipeline.answer_query("question")
 
     assert result.answer == INSUFFICIENT_INFORMATION_ANSWER
+    assert result.grounding_status is None
     assert result.retrieved_chunks == [{"chunk_id": "missing-text"}]
     assert llm_client.calls == []
 
@@ -352,7 +374,75 @@ def test_relevance_threshold_is_configurable() -> None:
 
     assert result.answer == "Generated answer."
     assert result.context_chunks == [chunk]
-    assert len(llm_client.calls) == 1
+    assert result.grounding_status == "supported"
+    assert len(llm_client.calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected_status"),
+    [
+        ("unsupported", "unsupported"),
+        ("insufficient_evidence", "insufficient_evidence"),
+    ],
+)
+def test_unverified_answers_are_replaced_with_abstention(
+    verdict: str,
+    expected_status: str,
+) -> None:
+    pipeline, _, llm_client = make_pipeline(
+        chunks=[
+            {
+                "chunk_id": "chunk-1",
+                "text": "The source only says the meeting was held.",
+                "distance": 0.2,
+            }
+        ],
+        answer="The meeting lasted 12 hours.",
+        verification_response=f'{{"verdict":"{verdict}"}}',
+    )
+
+    result = pipeline.answer_query("How long was the meeting?")
+
+    assert result.answer == INSUFFICIENT_INFORMATION_ANSWER
+    assert result.grounding_status == expected_status
+    assert result.failure_kind is None
+    assert len(llm_client.calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("verification_response", "verification_error"),
+    [
+        ("not-json", None),
+        ('{"verdict":"supported","extra":true}', None),
+        ('{"verdict":"supported"}', LLMConnectionError("PRIVATE_VERIFIER_FAILURE")),
+    ],
+)
+def test_unavailable_or_malformed_verification_fails_closed(
+    verification_response: str,
+    verification_error: Exception | None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pipeline, _, _ = make_pipeline(
+        chunks=[
+            {
+                "chunk_id": "chunk-1",
+                "text": "Relevant evidence.",
+                "distance": 0.2,
+            }
+        ],
+        answer="Generated answer.",
+        verification_response=verification_response,
+        verification_error=verification_error,
+    )
+
+    result = pipeline.answer_query("Question")
+
+    assert result.answer == (
+        "Answer unavailable: source verification could not be completed."
+    )
+    assert result.grounding_status == "unavailable"
+    assert result.failure_kind == "verification_error"
+    assert "PRIVATE_VERIFIER_FAILURE" not in caplog.text
 
 
 def test_invalid_relevance_threshold_is_rejected() -> None:

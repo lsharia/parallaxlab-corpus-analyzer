@@ -244,6 +244,16 @@ def test_output_token_limit_is_classified_from_finish_reason() -> None:
         transport.close()
 
 
+@pytest.mark.parametrize("content", ["", "  \n\t"])
+def test_empty_completion_is_classified_as_invalid_response(content: str) -> None:
+    client, transport = make_client(lambda request: success_response(content))
+    try:
+        with pytest.raises(InvalidAPIResponseError, match="empty text content"):
+            client.generate("prompt")
+    finally:
+        transport.close()
+
+
 def test_provider_token_limit_error_is_classified() -> None:
     client, transport = make_client(
         lambda request: httpx.Response(

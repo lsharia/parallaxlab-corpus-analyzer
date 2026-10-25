@@ -61,9 +61,15 @@ def _merge_with_overlap(
 
         chunks.append(current)
         overlap = current[-chunk_overlap:] if chunk_overlap else ""
-        current = overlap + piece
-        if len(current) > chunk_size:
-            current = current[:chunk_size]
+        available = chunk_size - len(overlap)
+        current = overlap + piece[:available]
+        remainder = piece[available:]
+        while remainder:
+            chunks.append(current)
+            overlap = current[-chunk_overlap:] if chunk_overlap else ""
+            available = chunk_size - len(overlap)
+            current = overlap + remainder[:available]
+            remainder = remainder[available:]
 
     if current:
         chunks.append(current)

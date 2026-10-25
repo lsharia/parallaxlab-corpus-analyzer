@@ -57,6 +57,8 @@ class FakePipeline:
             generation_latency_seconds=0.02,
             total_latency_seconds=0.03,
             context_chunks=[chunk],
+            verification_latency_seconds=0.005,
+            grounding_status="supported",
             failure_kind=None,
         )
 
@@ -104,6 +106,7 @@ def test_query_returns_existing_rag_result_shape(
         ],
         "retrieval_latency_seconds": 0.01,
         "generation_latency_seconds": 0.02,
+        "verification_latency_seconds": 0.005,
         "total_latency_seconds": 0.03,
         "context_chunks": [
             {
@@ -114,6 +117,7 @@ def test_query_returns_existing_rag_result_shape(
                 "distance": 0.12,
             }
         ],
+        "grounding_status": "supported",
         "failure_kind": None,
     }
     assert pipeline.calls == [
@@ -213,6 +217,7 @@ def test_pipeline_exception_is_not_exposed(
         ("output_limit", 502),
         ("api_error", 502),
         ("generation_error", 502),
+        ("verification_error", 502),
         ("future_unknown_failure", 500),
     ],
 )
@@ -229,6 +234,8 @@ def test_expected_pipeline_failures_use_meaningful_status_codes(
         generation_latency_seconds=0.0,
         total_latency_seconds=0.01,
         context_chunks=[],
+        verification_latency_seconds=0.0,
+        grounding_status="unavailable" if failure_kind == "verification_error" else None,
         failure_kind=failure_kind,
     )
     pipeline = FakePipeline(result=result)
@@ -238,6 +245,9 @@ def test_expected_pipeline_failures_use_meaningful_status_codes(
 
     assert response.status_code == status_code
     assert response.json()["failure_kind"] == failure_kind
+    assert response.json()["grounding_status"] == (
+        "unavailable" if failure_kind == "verification_error" else None
+    )
     assert response.json()["answer"] == "Safe pipeline message."
 
 

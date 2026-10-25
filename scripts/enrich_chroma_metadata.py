@@ -64,6 +64,7 @@ def enrich_from_files(
 
 
 def main() -> int:
+    """Enrich the persistent collection and save its coverage report."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, default=None)
     parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME)

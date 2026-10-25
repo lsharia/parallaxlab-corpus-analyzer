@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-DEFAULT_RAW_PATH = "data/raw/ag_news_train_5000.jsonl"
+DEFAULT_RAW_PATH = "data/raw/ag_news_train_5200.jsonl"
 DEFAULT_OUTPUT_PATH = "data/processed/clean_corpus.parquet"
+MIN_CLEAN_DOCUMENTS: int = 5_000
 LANGUAGE = "en"
 LANGUAGE_MIN_PROBABILITY = 0.80
 
@@ -27,6 +28,7 @@ class _HTMLTextExtractor(HTMLParser):
         self.parts: list[str] = []
 
     def handle_data(self, data: str) -> None:
+        """Append one visible HTML text fragment."""
         self.parts.append(data)
 
 
@@ -224,6 +226,11 @@ def main() -> int:
         cleaned_records, statistics = process_records(records)
         if not cleaned_records:
             raise ValueError("No documents remained after preprocessing.")
+        if len(cleaned_records) < MIN_CLEAN_DOCUMENTS:
+            raise ValueError(
+                f"Only {len(cleaned_records):,} documents remained after cleaning; "
+                f"at least {MIN_CLEAN_DOCUMENTS:,} are required."
+            )
         save_clean_dataset(cleaned_records, output_path)
     except (OSError, RuntimeError, ValueError) as error:
         print(f"Preprocessing failed: {type(error).__name__}: {error}", file=sys.stderr)

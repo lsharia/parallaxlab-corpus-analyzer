@@ -3,20 +3,28 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
+from collections.abc import Sized
 from numbers import Integral, Real
 import sys
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .embedding_manifest import chunk_source_fingerprint
+else:
+    from embedding_manifest import chunk_source_fingerprint
 
-DEFAULT_CHUNKS_PATH = "data/processed/chunks.parquet"
-DEFAULT_EMBEDDINGS_PATH = "data/processed/embeddings.parquet"
-DEFAULT_DATABASE_PATH = "data/vector_db"
-DEFAULT_COLLECTION_NAME = "rag_chunks"
-DEFAULT_BATCH_SIZE = 256
-DEFAULT_TOPIC_METADATA_PATH = "data/processed/topic_assignments.parquet"
-DEFAULT_SENTIMENT_METADATA_PATH = "data/processed/sentiment_scores.parquet"
+
+DEFAULT_CHUNKS_PATH: str = "data/processed/chunks.parquet"
+DEFAULT_EMBEDDINGS_PATH: str = "data/processed/embeddings.parquet"
+DEFAULT_EMBEDDING_METADATA_PATH: str = "data/processed/embedding_metadata.json"
+DEFAULT_DATABASE_PATH: str = "data/vector_db"
+DEFAULT_COLLECTION_NAME: str = "rag_chunks"
+DEFAULT_BATCH_SIZE: int = 256
+DEFAULT_TOPIC_METADATA_PATH: str = "data/processed/topic_assignments.parquet"
+DEFAULT_SENTIMENT_METADATA_PATH: str = "data/processed/sentiment_scores.parquet"
 
 
 def _metadata_matches(
@@ -233,8 +241,9 @@ def update_collection_metadata(
 def create_persistent_collection(
     database_path: Path,
     collection_name: str = DEFAULT_COLLECTION_NAME,
+    rebuild: bool = False,
 ) -> tuple[Any, Any]:
-    """Open or create the persistent ChromaDB client and collection."""
+    """Open/create a collection, optionally replacing only that collection."""
     try:
         import chromadb
     except ImportError as error:
@@ -242,6 +251,10 @@ def create_persistent_collection(
 
     database_path.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(database_path))
+    if rebuild and collection_name in {
+        collection.name for collection in client.list_collections()
+    }:
+        client.delete_collection(name=collection_name)
     collection = client.get_or_create_collection(
         name=collection_name,
         metadata={"hnsw:space": "cosine"},
@@ -328,6 +341,15 @@ def _validate_and_align_inputs(chunks: Any, embedding_table: Any) -> list[dict[s
     return aligned
 
 
+def _has_vector_dimension(vector: object, dimension: int) -> bool:
+    """Check a list-like Parquet vector without accepting strings."""
+    return (
+        not isinstance(vector, (str, bytes))
+        and isinstance(vector, Sized)
+        and len(vector) == dimension
+    )
+
+
 def ingest_records(
     collection: Any,
     records: list[dict[str, Any]],
@@ -402,20 +424,122 @@ def ingest_datasets(
     database_path: Path,
     collection_name: str = DEFAULT_COLLECTION_NAME,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    rebuild: bool = False,
+    embedding_model_name: str | None = None,
 ) -> dict[str, int | str]:
-    """Validate input tables, upsert them into ChromaDB, and verify persistence."""
+    """Synchronize ChromaDB records with validated inputs and prune stale IDs.
+
+    Identical records retain enriched metadata. Changed documents or vectors are
+    upserted, which intentionally clears their now-stale enrichment metadata.
+    ``rebuild`` replaces only the selected collection before ingestion.
+    """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero")
+    if embedding_model_name is not None and (
+        not isinstance(embedding_model_name, str) or not embedding_model_name.strip()
+    ):
+        raise ValueError("embedding_model_name must be a non-empty string.")
     records = _validate_and_align_inputs(chunks, embedding_table)
-    client, collection = create_persistent_collection(database_path, collection_name)
-    existing = collection.get(include=["metadatas"])
-    existing_ids = set(existing["ids"])
-    pending_records = [
-        record for record in records if record["chunk_id"] not in existing_ids
-    ]
+    embedding_dimension = len(records[0]["embedding"])
+    _, collection = create_persistent_collection(
+        database_path, collection_name, rebuild=rebuild
+    )
+    collection_metadata = dict(collection.metadata or {})
+    collection_metadata.pop("hnsw:space", None)
+    stored_model_name = collection_metadata.get("embedding_model")
+    stored_dimension = collection_metadata.get("embedding_dimension")
+    if (
+        stored_model_name is None
+        and collection.count() > 0
+        and embedding_model_name is not None
+        and not rebuild
+    ):
+        raise RuntimeError(
+            "The existing collection has no recorded embedding configuration. "
+            "Use --rebuild to establish a verifiable model configuration."
+        )
+    if stored_model_name is not None and embedding_model_name is None:
+        raise RuntimeError(
+            "Embedding model metadata is required to update this collection; "
+            "use ingest_from_files or explicitly rebuild the collection."
+        )
+    configuration_changed = (
+        stored_model_name is not None
+        and (
+            stored_model_name != embedding_model_name
+            or stored_dimension != embedding_dimension
+        )
+    )
+    if configuration_changed and not rebuild:
+        raise RuntimeError(
+            "Embedding model or dimension differs from the collection. "
+            "Regenerate embeddings and rerun with --rebuild."
+        )
+    if embedding_model_name is not None:
+        collection_metadata.update(
+            {
+                "embedding_model": embedding_model_name.strip(),
+                "embedding_dimension": embedding_dimension,
+            }
+        )
+        collection.modify(metadata=collection_metadata)
+
+    existing = collection.get(include=["documents", "metadatas", "embeddings"])
+    existing_ids = existing.get("ids") or []
+    existing_documents = existing.get("documents")
+    existing_metadatas = existing.get("metadatas")
+    existing_embeddings = existing.get("embeddings")
+    if any(
+        values is None or len(values) != len(existing_ids)
+        for values in (existing_documents, existing_metadatas, existing_embeddings)
+    ):
+        raise RuntimeError("Existing collection records are incomplete.")
+
+    existing_by_id = {
+        chunk_id: (document, metadata, vector)
+        for chunk_id, document, metadata, vector in zip(
+            existing_ids,
+            existing_documents,
+            existing_metadatas,
+            existing_embeddings,
+        )
+    }
+    pending_records: list[dict[str, Any]] = []
+    for record in records:
+        stored = existing_by_id.get(record["chunk_id"])
+        if stored is None:
+            pending_records.append(record)
+            continue
+        stored_document, stored_metadata, stored_vector = stored
+        vector_matches = (
+            stored_vector is not None
+            and len(stored_vector) == len(record["embedding"])
+            and all(
+                math.isclose(float(actual), expected, rel_tol=1e-6, abs_tol=1e-7)
+                for actual, expected in zip(stored_vector, record["embedding"])
+            )
+        )
+        metadata_matches = (
+            isinstance(stored_metadata, dict)
+            and stored_metadata.get("document_id") == record["document_id"]
+            and stored_metadata.get("source") == record["source"]
+        )
+        if (
+            stored_document != record["text"]
+            or not vector_matches
+            or not metadata_matches
+        ):
+            pending_records.append(record)
+
     batches = (
         ingest_records(collection, pending_records, batch_size=batch_size)
         if pending_records
         else 0
     )
+    stale_ids = set(existing_ids) - {record["chunk_id"] for record in records}
+    stale_id_list = sorted(stale_ids)
+    for start in range(0, len(stale_id_list), batch_size):
+        collection.delete(ids=stale_id_list[start : start + batch_size])
     validation = validate_collection(
         collection, [record["chunk_id"] for record in records]
     )
@@ -425,6 +549,7 @@ def ingest_datasets(
         "records": validation["records"],
         "batch_size": batch_size,
         "batches": batches,
+        "embedding_model": embedding_model_name or "unspecified",
     }
 
 
@@ -434,23 +559,79 @@ def ingest_from_files(
     database_path: Path,
     collection_name: str = DEFAULT_COLLECTION_NAME,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    rebuild: bool = False,
+    embedding_metadata_path: Path | None = None,
 ) -> dict[str, int | str]:
-    """Read the existing chunk and embedding Parquet files and ingest them."""
+    """Read vectors, validate their model manifest, and synchronize ChromaDB."""
     import pandas as pd
 
     if not chunks_path.is_file():
         raise FileNotFoundError(f"Chunk dataset does not exist: {chunks_path}")
     if not embeddings_path.is_file():
         raise FileNotFoundError(f"Embedding dataset does not exist: {embeddings_path}")
+    metadata_path = embedding_metadata_path or embeddings_path.with_name(
+        "embedding_metadata.json"
+    )
+    if not metadata_path.is_file():
+        raise FileNotFoundError(
+            f"Embedding model metadata does not exist: {metadata_path}"
+        )
 
     chunks = pd.read_parquet(chunks_path)
     embedding_table = pd.read_parquet(embeddings_path)
+    try:
+        embedding_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError("Embedding model metadata is not valid JSON.") from error
+    if not isinstance(embedding_metadata, dict):
+        raise ValueError("Embedding model metadata must be a JSON object.")
+    if not {"chunk_id", "text"}.issubset(chunks.columns):
+        raise ValueError(
+            "Chunk dataset must include IDs and source text to verify its embeddings."
+        )
+    recorded_source_fingerprint = embedding_metadata.get("chunk_source_sha256")
+    current_source_fingerprint = chunk_source_fingerprint(
+        zip(chunks["chunk_id"].tolist(), chunks["text"].tolist())
+    )
+    if recorded_source_fingerprint != current_source_fingerprint:
+        raise ValueError(
+            "Embedding source text fingerprint does not match the current chunks; "
+            "regenerate embeddings before ingestion."
+        )
+    model_name = embedding_metadata.get("model_name")
+    dimension = embedding_metadata.get("embedding_dimension")
+    vector_count = embedding_metadata.get("number_of_chunks")
+    if (
+        not isinstance(model_name, str)
+        or not model_name.strip()
+        or isinstance(dimension, bool)
+        or not isinstance(dimension, int)
+        or dimension <= 0
+        or isinstance(vector_count, bool)
+        or not isinstance(vector_count, int)
+        or vector_count <= 0
+    ):
+        raise ValueError(
+            "Embedding model metadata is missing a valid model, dimension, or count."
+        )
+    if len(embedding_table) != len(chunks) or vector_count != len(chunks):
+        raise ValueError(
+            "Embedding model metadata does not correspond to the chunk dataset."
+        )
+    if not embedding_table["embedding"].map(
+        lambda vector: _has_vector_dimension(vector, dimension)
+    ).all():
+        raise ValueError(
+            "Embedding model metadata dimension does not match the stored vectors."
+        )
     return ingest_datasets(
         chunks,
         embedding_table,
         database_path,
         collection_name=collection_name,
         batch_size=batch_size,
+        rebuild=rebuild,
+        embedding_model_name=model_name,
     )
 
 
@@ -459,14 +640,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--chunks", type=Path, default=None)
     parser.add_argument("--embeddings", type=Path, default=None)
+    parser.add_argument("--embedding-metadata", type=Path, default=None)
     parser.add_argument("--database", type=Path, default=None)
     parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Delete and recreate only the selected ChromaDB collection before ingesting.",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
     chunks_path = (args.chunks or project_root / DEFAULT_CHUNKS_PATH).resolve()
     embeddings_path = (args.embeddings or project_root / DEFAULT_EMBEDDINGS_PATH).resolve()
+    embedding_metadata_path = (
+        args.embedding_metadata
+        or project_root / DEFAULT_EMBEDDING_METADATA_PATH
+    ).resolve()
     database_path = (args.database or project_root / DEFAULT_DATABASE_PATH).resolve()
 
     try:
@@ -476,6 +667,8 @@ def main() -> int:
             database_path,
             collection_name=args.collection,
             batch_size=args.batch_size,
+            rebuild=args.rebuild,
+            embedding_metadata_path=embedding_metadata_path,
         )
     except (FileNotFoundError, OSError, RuntimeError, ValueError, ImportError) as error:
         print(f"Vector ingestion failed: {type(error).__name__}: {error}", file=sys.stderr)
@@ -487,6 +680,7 @@ def main() -> int:
     print(f"Records: {result['records']:,}")
     print(f"Batch size: {result['batch_size']}")
     print(f"Batches: {result['batches']}")
+    print(f"Embedding model: {result['embedding_model']}")
     return 0
 
 

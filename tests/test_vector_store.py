@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import pandas as pd
 import pytest
 
+from src.embedding_manifest import chunk_source_fingerprint
 from src.vector_store import (
     build_document_metadata,
     create_persistent_collection,
@@ -82,6 +84,97 @@ def test_repeated_ingestion_does_not_duplicate_or_rewrite_records(tmp_path) -> N
     assert collection.count() == 3
 
 
+def test_ingestion_updates_changed_records_and_removes_stale_ids(tmp_path) -> None:
+    chunks, embeddings = make_inputs()
+    database_path = tmp_path / "chroma"
+    ingest_datasets(chunks, embeddings, database_path)
+
+    changed_chunks = chunks.iloc[:2].copy()
+    changed_embeddings = embeddings.iloc[:2].copy()
+    changed_chunks.loc[0, "text"] = "Updated source text"
+    changed_embeddings["embedding"] = [
+        [0.9, 0.8, 0.7],
+        embeddings.iloc[1]["embedding"],
+    ]
+
+    result = ingest_datasets(
+        changed_chunks,
+        changed_embeddings,
+        database_path,
+        batch_size=2,
+    )
+    _, collection = create_persistent_collection(database_path)
+    stored = collection.get(include=["documents", "embeddings"])
+    stored_by_id = dict(zip(stored["ids"], zip(stored["documents"], stored["embeddings"])))
+
+    assert result["records"] == 2
+    assert result["batches"] == 1
+    assert set(stored_by_id) == {"chunk-1", "chunk-2"}
+    assert stored_by_id["chunk-1"][0] == "Updated source text"
+    assert list(stored_by_id["chunk-1"][1]) == pytest.approx([0.9, 0.8, 0.7])
+
+
+def test_explicit_rebuild_allows_embedding_dimension_change(tmp_path) -> None:
+    chunks, embeddings = make_inputs()
+    database_path = tmp_path / "chroma"
+    ingest_datasets(
+        chunks,
+        embeddings,
+        database_path,
+        embedding_model_name="model-a",
+    )
+
+    changed_dimension = embeddings.copy()
+    changed_dimension["embedding"] = [[0.1, 0.2]] * len(changed_dimension)
+    with pytest.raises(RuntimeError, match="differs from the collection"):
+        ingest_datasets(
+            chunks,
+            changed_dimension,
+            database_path,
+            embedding_model_name="model-b",
+        )
+    result = ingest_datasets(
+        chunks,
+        changed_dimension,
+        database_path,
+        rebuild=True,
+        embedding_model_name="model-b",
+    )
+    _, collection = create_persistent_collection(database_path)
+    stored = collection.get(include=["embeddings"])
+
+    assert result["records"] == 3
+    assert result["batches"] == 1
+    assert all(len(vector) == 2 for vector in stored["embeddings"])
+    assert collection.metadata["embedding_model"] == "model-b"
+    assert collection.metadata["embedding_dimension"] == 2
+
+
+def test_model_metadata_is_required_to_adopt_existing_collection(tmp_path) -> None:
+    chunks, embeddings = make_inputs()
+    database_path = tmp_path / "chroma"
+    ingest_datasets(chunks, embeddings, database_path)
+
+    with pytest.raises(RuntimeError, match="no recorded embedding configuration"):
+        ingest_datasets(
+            chunks,
+            embeddings,
+            database_path,
+            embedding_model_name="model-a",
+        )
+
+    result = ingest_datasets(
+        chunks,
+        embeddings,
+        database_path,
+        rebuild=True,
+        embedding_model_name="model-a",
+    )
+    _, collection = create_persistent_collection(database_path)
+    assert result["records"] == 3
+    assert collection.metadata["embedding_model"] == "model-a"
+
+
 def test_reopens_existing_persistent_database(tmp_path) -> None:
     chunks, embeddings = make_inputs()
     database_path = tmp_path / "chroma"
@@ -136,6 +229,86 @@ def test_missing_input_file_is_reported(tmp_path) -> None:
             tmp_path / "missing_chunks.parquet",
             tmp_path / "missing_embeddings.parquet",
             tmp_path / "chroma",
+        )
+
+
+def test_ingestion_requires_embedding_model_manifest_when_inputs_exist(tmp_path) -> None:
+    chunks, embeddings = make_inputs()
+    chunks_path = tmp_path / "chunks.parquet"
+    embeddings_path = tmp_path / "embeddings.parquet"
+    chunks.to_parquet(chunks_path, index=False)
+    embeddings.to_parquet(embeddings_path, index=False)
+
+    with pytest.raises(FileNotFoundError, match="Embedding model metadata"):
+        ingest_from_files(
+            chunks_path,
+            embeddings_path,
+            tmp_path / "chroma",
+        )
+
+
+def test_file_ingestion_accepts_matching_source_fingerprint(tmp_path) -> None:
+    chunks, embeddings = make_inputs()
+    chunks_path = tmp_path / "chunks.parquet"
+    embeddings_path = tmp_path / "embeddings.parquet"
+    manifest_path = tmp_path / "embedding_metadata.json"
+    chunks.to_parquet(chunks_path, index=False)
+    embeddings.to_parquet(embeddings_path, index=False)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "model_name": "test-model",
+                "embedding_dimension": 3,
+                "number_of_chunks": len(chunks),
+                "chunk_source_sha256": chunk_source_fingerprint(
+                    zip(chunks["chunk_id"].tolist(), chunks["text"].tolist())
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = ingest_from_files(
+        chunks_path,
+        embeddings_path,
+        tmp_path / "chroma",
+        embedding_metadata_path=manifest_path,
+    )
+
+    assert result["records"] == len(chunks)
+    assert result["embedding_model"] == "test-model"
+
+
+def test_file_ingestion_rejects_chunks_changed_after_embedding(tmp_path) -> None:
+    chunks, embeddings = make_inputs()
+    chunks_path = tmp_path / "chunks.parquet"
+    embeddings_path = tmp_path / "embeddings.parquet"
+    manifest_path = tmp_path / "embedding_metadata.json"
+    chunks.to_parquet(chunks_path, index=False)
+    embeddings.to_parquet(embeddings_path, index=False)
+    original_fingerprint = chunk_source_fingerprint(
+        zip(chunks["chunk_id"].tolist(), chunks["text"].tolist())
+    )
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "model_name": "test-model",
+                "embedding_dimension": 3,
+                "number_of_chunks": len(chunks),
+                "chunk_source_sha256": original_fingerprint,
+            }
+        ),
+        encoding="utf-8",
+    )
+    chunks.loc[0, "text"] = "Changed source text with stale vectors."
+    chunks.to_parquet(chunks_path, index=False)
+
+    with pytest.raises(ValueError, match="fingerprint.*regenerate embeddings"):
+        ingest_from_files(
+            chunks_path,
+            embeddings_path,
+            tmp_path / "chroma",
+            embedding_metadata_path=manifest_path,
         )
 
 

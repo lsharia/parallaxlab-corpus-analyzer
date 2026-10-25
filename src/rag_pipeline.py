@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import math
 import traceback
-from typing import Any
+from typing import Literal
 
 from src.llm_client import (
     APIError,
@@ -22,17 +22,22 @@ from src.llm_client import (
     RateLimitError,
     RequestTimeoutError,
 )
+from src.grounding import (
+    AnswerGroundingVerifier,
+    GroundingVerificationError,
+    GroundingVerdict,
+)
 from src.prompts import DEFAULT_MAX_CONTEXT_CHARS, build_rag_messages
 from src.retrieval import SemanticRetriever, build_metadata_filter
 
 
-DEFAULT_TOP_K = 5
-DEFAULT_MAX_RETRIEVAL_DISTANCE = 0.7
-INSUFFICIENT_INFORMATION_ANSWER = "I don't have enough information in the available documents to answer that question."
-logger = logging.getLogger(__name__)
+DEFAULT_TOP_K: int = 5
+DEFAULT_MAX_RETRIEVAL_DISTANCE: float = 0.7
+INSUFFICIENT_INFORMATION_ANSWER: str = "I don't have enough information in the available documents to answer that question."
+logger: logging.Logger = logging.getLogger(__name__)
 
 PromptBuilder = Callable[
-    [str, Sequence[Mapping[str, Any]], int], list[dict[str, str]]
+    [str, Sequence[Mapping[str, object]], int], list[dict[str, str]]
 ]
 
 
@@ -56,11 +61,13 @@ class RAGResult:
 
     query: str
     answer: str
-    retrieved_chunks: list[Any]
+    retrieved_chunks: list[object]
     retrieval_latency_seconds: float
     generation_latency_seconds: float
     total_latency_seconds: float
-    context_chunks: list[Any]
+    context_chunks: list[object]
+    verification_latency_seconds: float = 0.0
+    grounding_status: GroundingVerdict | Literal["unavailable"] | None = None
     failure_kind: str | None = None
 
 
@@ -74,6 +81,7 @@ class RAGPipeline:
         prompt_builder: PromptBuilder | None = None,
         max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
         max_retrieval_distance: float = DEFAULT_MAX_RETRIEVAL_DISTANCE,
+        grounding_verifier: AnswerGroundingVerifier | None = None,
     ) -> None:
         if (
             not isinstance(max_context_chars, int)
@@ -94,6 +102,7 @@ class RAGPipeline:
         self.prompt_builder = prompt_builder or build_rag_messages
         self.max_context_chars = max_context_chars
         self.max_retrieval_distance = float(max_retrieval_distance)
+        self.grounding_verifier = grounding_verifier or AnswerGroundingVerifier()
 
     def answer_query(
         self,
@@ -234,17 +243,57 @@ class RAGPipeline:
                 "generation_error",
             )
         generation_latency = time.perf_counter() - generation_started
+
+        verification_started = time.perf_counter()
+        try:
+            verdict = self.grounding_verifier.verify(
+                normalized_query,
+                answer,
+                context_chunks,
+                self.llm_client.generate,
+            )
+        except (LLMError, GroundingVerificationError) as error:
+            _log_unexpected_pipeline_error("grounding_verification", error)
+            return self._result(
+                normalized_query,
+                "Answer unavailable: source verification could not be completed.",
+                chunks,
+                context_chunks,
+                retrieval_latency,
+                generation_latency,
+                total_started,
+                "verification_error",
+                verification_latency_seconds=time.perf_counter() - verification_started,
+                grounding_status="unavailable",
+            )
+        except Exception as error:
+            _log_unexpected_pipeline_error("grounding_verification", error)
+            return self._result(
+                normalized_query,
+                "Answer unavailable: source verification could not be completed.",
+                chunks,
+                context_chunks,
+                retrieval_latency,
+                generation_latency,
+                total_started,
+                "verification_error",
+                verification_latency_seconds=time.perf_counter() - verification_started,
+                grounding_status="unavailable",
+            )
+        verification_latency = time.perf_counter() - verification_started
         return self._result(
             normalized_query,
-            answer,
+            answer if verdict == "supported" else INSUFFICIENT_INFORMATION_ANSWER,
             chunks,
             context_chunks,
             retrieval_latency,
             generation_latency,
             total_started,
+            verification_latency_seconds=verification_latency,
+            grounding_status=verdict,
         )
 
-    def _is_usable_relevant_chunk(self, chunk: Any) -> bool:
+    def _is_usable_relevant_chunk(self, chunk: object) -> bool:
         if not isinstance(chunk, Mapping):
             return False
         text = chunk.get("text")
@@ -279,12 +328,15 @@ class RAGPipeline:
     def _result(
         query: str,
         answer: str,
-        retrieved_chunks: list[Any],
-        context_chunks: list[Any],
+        retrieved_chunks: list[object],
+        context_chunks: list[object],
         retrieval_latency: float,
         generation_latency: float,
         total_started: float,
         failure_kind: str | None = None,
+        *,
+        verification_latency_seconds: float = 0.0,
+        grounding_status: GroundingVerdict | Literal["unavailable"] | None = None,
     ) -> RAGResult:
         return RAGResult(
             query=query,
@@ -294,6 +346,8 @@ class RAGPipeline:
             retrieval_latency_seconds=retrieval_latency,
             generation_latency_seconds=generation_latency,
             total_latency_seconds=time.perf_counter() - total_started,
+            verification_latency_seconds=verification_latency_seconds,
+            grounding_status=grounding_status,
             failure_kind=failure_kind,
         )
 
@@ -302,7 +356,7 @@ class RAGPipeline:
         cls,
         query: str,
         answer: str,
-        retrieved_chunks: list[Any],
+        retrieved_chunks: list[object],
         failure_kind: str,
         retrieval_started: float,
         total_started: float,

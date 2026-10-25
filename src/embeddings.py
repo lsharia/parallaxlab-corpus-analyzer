@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -10,11 +11,17 @@ from typing import Any, Sequence
 
 import numpy as np
 
+if __package__:
+    from .embedding_manifest import chunk_source_fingerprint
+else:
+    from embedding_manifest import chunk_source_fingerprint
 
-DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_INPUT_PATH = "data/processed/chunks.parquet"
-DEFAULT_OUTPUT_PATH = "data/processed/embeddings.parquet"
-DEFAULT_BATCH_SIZE = 32
+
+DEFAULT_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_INPUT_PATH: str = "data/processed/chunks.parquet"
+DEFAULT_OUTPUT_PATH: str = "data/processed/embeddings.parquet"
+DEFAULT_METADATA_PATH: str = "data/processed/embedding_metadata.json"
+DEFAULT_BATCH_SIZE: int = 32
 
 
 def select_device(device: str = "auto") -> str:
@@ -152,6 +159,9 @@ def generate_chunk_embeddings(
         "model_name": model_name,
         "device": selected_device,
         "batch_size": batch_size,
+        "chunk_source_sha256": chunk_source_fingerprint(
+            zip(chunks["chunk_id"].tolist(), texts)
+        ),
         **statistics,
     }
     return embedding_table, metadata
@@ -164,8 +174,9 @@ def embed_chunk_dataset(
     batch_size: int = DEFAULT_BATCH_SIZE,
     device: str = "auto",
     show_progress_bar: bool = True,
+    metadata_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Read chunks Parquet, generate embeddings, save the mapping, and return metrics."""
+    """Save generated vectors and a manifest recording their model configuration."""
     import pandas as pd
 
     chunks = pd.read_parquet(input_path)
@@ -178,6 +189,13 @@ def embed_chunk_dataset(
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     embedding_table.to_parquet(output_path, index=False)
+    manifest_filename = Path(DEFAULT_METADATA_PATH).name
+    manifest_path = metadata_path or output_path.with_name(manifest_filename)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return metadata
 
 
@@ -186,6 +204,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--metadata", type=Path, default=None)
     parser.add_argument("--model", default=DEFAULT_MODEL_NAME)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -194,6 +213,7 @@ def main() -> int:
     project_root = Path(__file__).resolve().parents[1]
     input_path = (args.input or project_root / DEFAULT_INPUT_PATH).resolve()
     output_path = (args.output or project_root / DEFAULT_OUTPUT_PATH).resolve()
+    metadata_path = args.metadata.resolve() if args.metadata else None
 
     try:
         metadata = embed_chunk_dataset(
@@ -202,6 +222,7 @@ def main() -> int:
             model_name=args.model,
             batch_size=args.batch_size,
             device=args.device,
+            metadata_path=metadata_path,
         )
     except (OSError, RuntimeError, ValueError, ImportError) as error:
         print(f"Embedding failed: {type(error).__name__}: {error}", file=sys.stderr)
@@ -217,6 +238,10 @@ def main() -> int:
     print(f"Average time per chunk: {metadata['average_time_per_chunk']:.6f} seconds")
     print(f"Throughput: {metadata['chunks_per_second']:.2f} chunks/second")
     print(f"Output: {output_path}")
+    print(
+        "Model metadata: "
+        f"{metadata_path or output_path.with_name(Path(DEFAULT_METADATA_PATH).name)}"
+    )
     return 0
 
 

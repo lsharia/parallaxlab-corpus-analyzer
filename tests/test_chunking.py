@@ -41,6 +41,16 @@ def test_chunk_overlap_is_preserved() -> None:
     assert chunks == ["abcdef", "efghij"]
 
 
+def test_long_separator_free_text_is_not_lost_at_chunk_boundaries() -> None:
+    text = "".join(chr(0x4E00 + index) for index in range(1_200))
+
+    chunks = split_text(text, chunk_size=500, chunk_overlap=50)
+    reconstructed = chunks[0] + "".join(chunk[50:] for chunk in chunks[1:])
+
+    assert all(len(chunk) <= 500 for chunk in chunks)
+    assert reconstructed == text
+
+
 def test_chunk_document_preserves_metadata_and_ids() -> None:
     document = {
         "document_id": "doc-123",

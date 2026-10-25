@@ -128,6 +128,35 @@ def collect_topic_evidence(
     return evidence
 
 
+def build_topic_review_template(
+    topic_evidence: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create a topic-by-topic template with unfilled human review fields."""
+    if not topic_evidence:
+        raise ValueError("topic evidence must not be empty")
+
+    topics = []
+    for topic in topic_evidence:
+        topics.append(
+            {
+                "topic_id": topic["topic_id"],
+                "top_words": topic["top_words"],
+                "representative_documents": topic["representative_documents"],
+                "human_coherence_assessment": None,
+                "human_rationale": "",
+            }
+        )
+    return {
+        "review_status": "pending_human_review",
+        "instructions": (
+            "For every topic, compare top_words with the representative document "
+            "excerpts. Fill in human_coherence_assessment and human_rationale; "
+            "do not treat automated observations as human approval."
+        ),
+        "topics": topics,
+    }
+
+
 def validate_retrieval_results(
     results: list[dict[str, Any]],
     metadata_by_chunk_id: dict[str, dict[str, Any]],
@@ -304,6 +333,7 @@ def build_validation_report(
 
 
 def main() -> int:
+    """Validate NLP artifacts, Chroma metadata, and filtered retrieval."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=None)
     parser.add_argument("--topic-assignments", type=Path, default=None)
@@ -314,6 +344,12 @@ def main() -> int:
     parser.add_argument("--collection", default=DEFAULT_COLLECTION_NAME)
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--topic-review-template",
+        type=Path,
+        default=None,
+        help="Write a separate JSON template for human review of every LDA topic.",
+    )
     args = parser.parse_args()
 
     paths = {
@@ -331,17 +367,35 @@ def main() -> int:
         "top_k": args.top_k,
     }
     output_path = (args.output or PROJECT_ROOT / DEFAULT_REPORT_PATH).resolve()
+    topic_review_path = (
+        args.topic_review_template.resolve()
+        if args.topic_review_template is not None
+        else None
+    )
     try:
         report = build_validation_report(**paths)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        if topic_review_path is not None:
+            topic_review_path.parent.mkdir(parents=True, exist_ok=True)
+            topic_review_path.write_text(
+                json.dumps(
+                    build_topic_review_template(report["topic_quality"]),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
     except (OSError, RuntimeError, ValueError, ImportError) as error:
         print(f"NLP metadata validation failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
     print(f"Validation report: {output_path}")
+    if topic_review_path is not None:
+        print(f"Topic review template: {topic_review_path}")
     print(f"Topic observations: {len(report['topic_quality'])}")
     print(
         "Sentiment evaluation: "

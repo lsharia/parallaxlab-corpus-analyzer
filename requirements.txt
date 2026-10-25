@@ -1,4 +1,6 @@
 pandas==3.0.6
+numpy==2.5.3
+pydantic==2.13.5
 sentence-transformers==6.1.0
 chromadb==1.5.9
 spacy==3.8.16

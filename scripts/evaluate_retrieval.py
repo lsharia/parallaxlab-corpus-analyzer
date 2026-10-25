@@ -205,6 +205,7 @@ def evaluate_dataset(
 
 
 def main() -> int:
+    """Run the judged retrieval queries and persist aggregate metrics."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
